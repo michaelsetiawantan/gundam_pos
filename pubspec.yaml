@@ -1,20 +1,27 @@
 name: gundam_pos
-description: "Gundam POS Client (Flutter Android tablet) — cashier UI + local SQLite + print broker."
-version: 0.1.0
+description: "Gundam POS Client (Flutter Android tablet) — cashier UI + local SQLite + print broker. F3b MVP demo flow wired to the real backend."
 publish_to: none
+version: 0.1.0
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
 
-# F0 foundation placeholder — real deps added as phases ship.
-# Flutter SDK is cloned separately; this file is authored without it.
 dependencies:
   flutter:
     sdk: flutter
+  http: ^1.2.0
+  sqflite: ^2.3.0
+  path_provider: ^2.1.0
+  path: ^1.9.0
+  flutter_secure_storage: ^9.0.0
+  crypto: ^3.0.3
+  # local_auth is optional (not wired yet) — declared for the Android build shim.
+  local_auth: ^2.2.0
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_lints: ^4.0.0
-  flutter_test: ^0.25.0
 
 flutter:
   uses-material-design: true
