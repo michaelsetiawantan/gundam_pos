@@ -82,6 +82,7 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
       cart: c.cart,
       deviceAssetId: c.deviceAssetId,
       shortcode: widget.session.shortcode,
+      onSettled: widget.session.noteSettled,
     );
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => PaymentScreen(controller: pc)));
   }

@@ -148,6 +148,22 @@ class FakeBackend {
           'upToDate': ['FORMAT', 'MEDIA'],
           'full': {'MASTER': northstarMaster(), 'OUTLET': northstarOutlet()},
         });
+      case '/api/pos/shifts':
+        if (req.method == 'POST') {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          return _json(201, {
+            'shift': {
+              'id': 'shift-1',
+              'tenantId': 't1',
+              'userId': 'u1',
+              'shiftType': 'MANUAL',
+              'startAt': DateTime.now().toIso8601String(),
+              'openHousebank': body['openHousebank'] ?? 500000,
+              'status': 'OPEN',
+            },
+          });
+        }
+        return _json(200, {});
       case '/api/pos/orders':
         if (req.method == 'POST') {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
@@ -211,6 +227,25 @@ class FakeBackend {
             },
             'sync': {'status': 'synced', 'transactionId': 'txn-1'},
           });
+        }
+        if (req.method == 'POST' && RegExp(r'^/api/pos/shifts/[^/]+/close$').hasMatch(path)) {
+          return _json(200, {
+            'closing': {
+              'id': 'shift-1',
+              'status': 'CLOSED',
+              'endAt': DateTime.now().toIso8601String(),
+              'openHousebank': 500000,
+              'closeHousebank': 600000,
+              'cashSales': 120000,
+              'payout': 0,
+              'expectedCash': 620000,
+              'variance': -20000,
+              'guestUpsert': {'upserted': 2, 'guests': 5},
+            },
+          });
+        }
+        if (req.method == 'POST' && path.endsWith('/void')) {
+          return _json(200, {'approval': {'id': 'app-1', 'status': 'PENDING'}});
         }
         return _json(404, {'error': 'not_found'});
     }

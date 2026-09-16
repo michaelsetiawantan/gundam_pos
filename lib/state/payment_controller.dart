@@ -22,6 +22,7 @@ class PaymentController extends ChangeNotifier {
     this.deviceAssetId,
     this.shortcode,
     ReceiptSequencer? receipts,
+    this.onSettled,
   }) : _receipts = receipts ?? ReceiptSequencer();
 
   final PosApi posApi;
@@ -42,6 +43,10 @@ class PaymentController extends ChangeNotifier {
   String? receiptId;
   bool settling = false;
   String? error;
+
+  /// Called with the server bill after a successful settle (used to record the
+  /// bill into the session's same-day ledger).
+  void Function(Map<String, dynamic>? bill)? onSettled;
 
   bool get covered => paid >= payable;
 
@@ -113,6 +118,7 @@ class PaymentController extends ChangeNotifier {
       );
       settled = r['bill'] as Map<String, dynamic>?;
       receiptId = (settled?['receiptId'] ?? id) as String;
+      onSettled?.call(settled);
       return settled != null;
     } on PosApiException catch (e) {
       error = _settleMessage(e);

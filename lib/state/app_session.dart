@@ -33,6 +33,15 @@ class AppSession extends ChangeNotifier {
   DateTime? lastSyncAt;
   bool syncing = false;
 
+  /// Same-day settled bills recorded on this device (POS shows today only).
+  final List<Map<String, dynamic>> todayBills = [];
+
+  void noteSettled(Map<String, dynamic>? bill) {
+    if (bill == null) return;
+    todayBills.insert(0, bill);
+    notifyListeners();
+  }
+
   /// Error surfaced to the current screen (mapped to user copy).
   String? lastError;
   bool busy = false;

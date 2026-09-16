@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/ui/open_tables_screen.dart';
+import 'package:gundam_pos/ui/shift_screen.dart';
 import 'package:gundam_pos/ui/theme.dart';
+import 'package:gundam_pos/ui/today_transactions_screen.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
 /// P04 — POS home/dashboard: outlet/device/user/shift context + quick actions.
@@ -73,8 +75,8 @@ class HomeScreen extends StatelessWidget {
                   childAspectRatio: 1.25,
                   children: [
                     HomeTile(icon: Icons.table_restaurant, title: 'Open Tables', subtitle: 'Server-synced hanging orders', onTap: () => _openTables(context)),
-                    HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, const _Placeholder("Today's Orders"))),
-                    HomeTile(icon: Icons.payments_outlined, title: 'Start Shift', subtitle: 'Open the cashier shift', onTap: () => _open(context, const _Placeholder('Shift'))),
+                    HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, TodayTransactionsScreen(session: session))),
+                    HomeTile(icon: Icons.payments_outlined, title: 'Start Shift', subtitle: 'Open the cashier shift', onTap: () => _openShift(context)),
                     HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, const _Placeholder('More'))),
                   ],
                 ),
@@ -100,6 +102,19 @@ class HomeScreen extends StatelessWidget {
     }
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => OpenTablesScreen(session: session, config: config),
+    ));
+  }
+
+  void _openShift(BuildContext context) {
+    final config = session.config;
+    if (config == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Sync the config first (refresh icon), then start a shift.')),
+      );
+      return;
+    }
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => ShiftScreen(session: session, config: config),
     ));
   }
 }
