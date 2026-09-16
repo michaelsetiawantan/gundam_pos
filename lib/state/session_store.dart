@@ -18,6 +18,8 @@ class PosContext {
     this.userName,
     this.outletId,
     this.outletName,
+    this.deviceId,
+    this.sessionCookie,
   });
 
   final String? deviceToken;
@@ -30,11 +32,16 @@ class PosContext {
   final String? userName;
   final String? outletId;
   final String? outletName;
+  final String? deviceId;
+  /// The `gundam_auth` JWT session cookie, if the deployment issues one. The
+  /// server's session guard reads this cookie; forwarded verbatim by the client.
+  final String? sessionCookie;
 
   bool get activated => deviceToken != null && groupId != null && tenantId != null;
   bool get loggedIn => sessionId != null && userId != null;
 
   PosContext withSession(Map<String, dynamic> r) => PosContext(
+        deviceId: deviceId,
         deviceToken: deviceToken,
         groupId: groupId,
         tenantId: tenantId,
@@ -45,9 +52,12 @@ class PosContext {
         userName: _nest(r['user'], 'fullName') ?? userName,
         outletId: _nest(r['outlet'], 'id') ?? tenantId,
         outletName: _nest(r['outlet'], 'name') ?? outletName,
+        // The server may issue the session cookie in a later body field.
+        sessionCookie: r['sessionCookie'] as String? ?? sessionCookie,
       );
 
   PosContext withRedeem(Map<String, dynamic> r) => PosContext(
+        deviceId: deviceId,
         deviceToken: r['deviceToken'] as String? ?? deviceToken,
         groupId: r['groupId'] as String? ?? groupId,
         tenantId: r['tenantId'] as String? ?? tenantId,
@@ -58,6 +68,22 @@ class PosContext {
         userName: userName,
         outletId: outletId,
         outletName: outletName,
+        sessionCookie: sessionCookie,
+      );
+
+  PosContext copyWith({String? deviceId, String? deviceToken}) => PosContext(
+        deviceId: deviceId ?? this.deviceId,
+        deviceToken: deviceToken ?? this.deviceToken,
+        groupId: groupId,
+        tenantId: tenantId,
+        shortcode: shortcode,
+        sessionId: sessionId,
+        userId: userId,
+        userEmail: userEmail,
+        userName: userName,
+        outletId: outletId,
+        outletName: outletName,
+        sessionCookie: sessionCookie,
       );
 
   static String? _nest(dynamic m, String key) {
@@ -81,6 +107,8 @@ const _kUser = 'gundam_user_id';
 const _kEmail = 'gundam_user_email';
 const _kName = 'gundam_user_name';
 const _kOutletName = 'gundam_outlet_name';
+const _kDeviceId = 'gundam_device_id';
+const _kSessionCookie = 'gundam_session_cookie';
 
 /// Production store backed by platform secure storage.
 class SecureSessionStore implements SessionStore {
@@ -101,6 +129,8 @@ class SecureSessionStore implements SessionStore {
       userEmail: all[_kEmail],
       userName: all[_kName],
       outletName: all[_kOutletName],
+      deviceId: all[_kDeviceId],
+      sessionCookie: all[_kSessionCookie],
     );
   }
 
@@ -116,6 +146,8 @@ class SecureSessionStore implements SessionStore {
       if (ctx.userEmail != null) _kEmail: ctx.userEmail!,
       if (ctx.userName != null) _kName: ctx.userName!,
       if (ctx.outletName != null) _kOutletName: ctx.outletName!,
+      if (ctx.deviceId != null) _kDeviceId: ctx.deviceId!,
+      if (ctx.sessionCookie != null) _kSessionCookie: ctx.sessionCookie!,
     };
     for (final e in toWrite.entries) {
       await _storage.write(key: e.key, value: e.value);
