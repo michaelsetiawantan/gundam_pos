@@ -197,16 +197,32 @@ class FakeBackend {
             'printJobs': <Map<String, dynamic>>[],
           });
         }
+        if (req.method == 'POST' && path.endsWith('/settle')) {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          return _json(200, {
+            'bill': {
+              'transactionId': 'txn-1',
+              'receiptId': body['receiptId'],
+              'orderId': _orderIdFrom(path),
+              'status': 'PAID',
+              'total': 45000,
+              'change': 0,
+              'tipsPending': 0,
+            },
+            'sync': {'status': 'synced', 'transactionId': 'txn-1'},
+          });
+        }
         return _json(404, {'error': 'not_found'});
     }
   }
 
   // Route matchers (keep the switch small).
   static final _ordersAddLineRe = RegExp(r'^/api/pos/orders/([^/]+)/lines/?$');
+  static final _orderPathRe = RegExp(r'^/api/pos/orders/([^/]+)');
   String? _addLineOrderId(String path, String method) {
     if (method != 'POST') return null;
     final m = _ordersAddLineRe.firstMatch(path);
     return m?.group(1);
   }
-  bool betterThan(RegExp r, String path) => r.hasMatch(path);
+  String? _orderIdFrom(String path) => _orderPathRe.firstMatch(path)?.group(1);
 }

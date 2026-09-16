@@ -5,6 +5,8 @@ import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/order_controller.dart';
+import 'package:gundam_pos/state/payment_controller.dart';
+import 'package:gundam_pos/ui/payment_screen.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
@@ -68,6 +70,20 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
       isScrollControlled: true,
       builder: (_) => _CartSheet(controller: c),
     );
+  }
+
+  void _pay() {
+    final pc = PaymentController(
+      posApi: c.posApi,
+      tenantId: c.tenantId,
+      config: c.config,
+      orderId: c.orderId!,
+      tableName: c.tableName,
+      cart: c.cart,
+      deviceAssetId: c.deviceAssetId,
+      shortcode: widget.session.shortcode,
+    );
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => PaymentScreen(controller: pc)));
   }
 
   @override
@@ -226,8 +242,18 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
           const SizedBox(width: 8),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: PosTheme.teal, foregroundColor: PosTheme.ink),
-            onPressed: c.busy ? null : () => _openCart(),
+            onPressed: c.busy ? null : _openCart,
             child: const Text('Review cart'),
+          ),
+          const SizedBox(width: 8),
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: PosTheme.tealSoft,
+              side: const BorderSide(color: PosTheme.teal, width: 1.5),
+              minimumSize: const Size(64, 48),
+            ),
+            onPressed: c.cart.isEmpty ? null : _pay,
+            child: const Text('Payment'),
           ),
         ]),
       ),
