@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/session_store.dart';
+import 'package:gundam_pos/ui/more_screen.dart';
 import 'package:gundam_pos/ui/open_tables_screen.dart';
 import 'package:gundam_pos/ui/shift_screen.dart';
 import 'package:gundam_pos/ui/theme.dart';
@@ -77,7 +78,7 @@ class HomeScreen extends StatelessWidget {
                     HomeTile(icon: Icons.table_restaurant, title: 'Open Tables', subtitle: 'Server-synced hanging orders', onTap: () => _openTables(context)),
                     HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, TodayTransactionsScreen(session: session))),
                     HomeTile(icon: Icons.payments_outlined, title: 'Start Shift', subtitle: 'Open the cashier shift', onTap: () => _openShift(context)),
-                    HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, const _Placeholder('More'))),
+                    HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, MoreScreen(session: session))),
                   ],
                 ),
               ],
@@ -185,21 +186,5 @@ class _Fact extends StatelessWidget {
         Text(value, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
       ]),
     ]);
-  }
-}
-
-/// Provisional screen for flows shipped in the next F3b slices; replaced by the
-/// real implementation as each slice lands.
-class _Placeholder extends StatelessWidget {
-  const _Placeholder(this.title);
-
-  final String title;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: Center(child: Text('$title — implemented in the next slice', style: const TextStyle(color: PosTheme.slate))),
-    );
   }
 }

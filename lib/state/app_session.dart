@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
+import 'package:gundam_pos/data/config_cache.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/session_store.dart';
@@ -32,6 +33,29 @@ class AppSession extends ChangeNotifier {
   Map<String, int> deviceVersions = const {};
   DateTime? lastSyncAt;
   bool syncing = false;
+
+  /// Outbox for deferred pushes (e.g. offline transactions). The MVP settles
+  /// directly against the server; this stays empty but enqueues and drains are
+  /// exercised by the sync UI. Persistence to SQLite `pending_sync` is the
+  /// upgrade path.
+  final List<Map<String, dynamic>> _pendingPush = [];
+
+  ConfigCache? _configCache;
+
+  int get pendingPushCount => _pendingPush.length;
+
+  void attachConfigCache(ConfigCache cache) => _configCache = cache;
+
+  void enqueuePush(String entityType, String entityId, Object payload) {
+    _pendingPush.add({'type': entityType, 'id': entityId, 'payload_json': payload});
+    notifyListeners();
+  }
+
+  /// Drain the outbox (mark acked). Idempotent; the queue is cleared on ack.
+  void drainPush() {
+    _pendingPush.clear();
+    notifyListeners();
+  }
 
   /// Same-day settled bills recorded on this device (POS shows today only).
   final List<Map<String, dynamic>> todayBills = [];
@@ -189,6 +213,18 @@ class AppSession extends ChangeNotifier {
           applied[d] = v;
         }
         deviceVersions = applied;
+        // Persist per-domain atomically (temp+rename); a failed write keeps the
+        // previous (last-known-good) file and never leaves a mixed version.
+        final cache = _configCache;
+        if (cache != null) {
+          for (final d in plan.needsFull) {
+            final payload = full[d];
+            if (payload != null) {
+              try {
+                await cache.writeJson(d, serverVersions[d] ?? 0, payload);
+              } catch (_) {/* keep last-known-good */}}
+          }
+        }
       }
       lastSyncAt = _now();
       return true;

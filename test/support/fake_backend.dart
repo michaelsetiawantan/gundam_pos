@@ -137,7 +137,7 @@ class FakeBackend {
         return _json(200, {
           'tenantId': 't1',
           'versions': {
-            for (final e in (_serverVersions.isEmpty ? const {'MASTER': 0, 'OUTLET': 0, 'FORMAT': 0, 'MEDIA': 0} : _serverVersions).entries) e.key: {'version': e.value, 'updatedAt': DateTime.now().toIso8601String()},
+            for (final e in (_serverVersions.isEmpty ? const {'MASTER': 1, 'OUTLET': 1, 'FORMAT': 0, 'MEDIA': 0} : _serverVersions).entries) e.key: {'version': e.value, 'updatedAt': DateTime.now().toIso8601String()},
           },
           'ttl': {'nonCredentialDays': 3},
         });
