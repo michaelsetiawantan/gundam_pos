@@ -40,6 +40,11 @@ class AppSession extends ChangeNotifier {
   PosContext get context => ctx;
   bool get isReady => stage == PosStage.ready;
 
+  /// Backend + session helpers consumed by the flow screens.
+  PosApi get posApi => _posApi;
+  String? get tenantId => ctx.tenantId;
+  String? get shortcode => ctx.shortcode;
+
   /// Auth provider for guarded routes — forwards the session cookie the
   /// deployment issues (server guard reads `gundam_auth`), plus the device id.
   AuthHeaders? authHeaders() {

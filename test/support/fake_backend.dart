@@ -23,6 +23,78 @@ class FakeBackend {
     ..clear()
     ..addAll(v);
 
+  /// Northstar demo config payloads (MASTER + OUTLET), tolerated by the client.
+  static Map<String, dynamic> northstarMaster() => {
+        'categories': [
+          {'id': 'cat-bev', 'parentId': null, 'name': 'Beverages', 'children': []},
+          {'id': 'cat-food', 'parentId': null, 'name': 'Food', 'children': []},
+        ],
+        'items': [
+          {
+            'id': 'item-espresso',
+            'categoryId': 'cat-bev',
+            'name': 'Espresso',
+            'itemcode': 'ESP',
+            'sku': 'NSTAR-NS-ESP',
+            'active': true,
+            'vatMode': 'EXCLUDE',
+            'vatRate': '11',
+            'scMode': 'NONE',
+            'priceLevels': [
+              {'levelIndex': 0, 'label': '', 'price': '25000'},
+              {'levelIndex': 1, 'label': 'Double', 'price': '32000'},
+            ],
+          },
+          {
+            'id': 'item-nasi',
+            'categoryId': 'cat-food',
+            'name': 'Nasi Goreng Special',
+            'itemcode': 'NGS',
+            'sku': 'NSTAR-NS-NGS',
+            'active': true,
+            'vatMode': 'INCLUDE',
+            'vatRate': '11',
+            'scMode': 'NONE',
+            'priceLevels': [
+              {'levelIndex': 0, 'label': '', 'price': '45000'},
+              {'levelIndex': 1, 'label': 'Large', 'price': '55000'},
+            ],
+            'itemModifiers': [
+              {'modifierId': 'mod-egg', 'modifier': {'id': 'mod-egg', 'name': 'Add egg', 'price': '5000', 'isOpenMod': false}},
+              {'modifierId': 'mod-crackers', 'modifier': {'id': 'mod-crackers', 'name': 'Crackers', 'price': '2000', 'isOpenMod': false}},
+            ],
+          },
+        ],
+        'menuLayouts': [
+          {
+            'id': 'layout-main',
+            'name': 'Main Menu',
+            'active': true,
+            'nodes': [
+              {'id': 'node-bev', 'parentId': null, 'name': 'Beverages', 'sortOrder': 0, 'assignments': [{'itemId': 'item-espresso'}]},
+              {'id': 'node-food', 'parentId': null, 'name': 'Main Dishes', 'sortOrder': 1, 'assignments': [{'itemId': 'item-nasi'}]},
+            ],
+          },
+        ],
+        'paymentMasters': [
+          {'id': 'm-cash', 'code': 'CASH', 'name': 'Cash', 'type': 'CASH'},
+          {'id': 'm-card', 'code': 'CARD', 'name': 'Card', 'type': 'NON_CASH'},
+        ],
+      };
+
+  static Map<String, dynamic> northstarOutlet() => {
+        'paymentMethods': [
+          {'id': 'pm-cash', 'masterId': 'm-cash', 'displayName': 'Cash', 'enabled': true, 'sortOrder': 0, 'master': {'id': 'm-cash', 'code': 'CASH', 'type': 'CASH'}},
+          {'id': 'pm-card', 'masterId': 'm-card', 'displayName': 'Visa', 'enabled': true, 'sortOrder': 1, 'master': {'id': 'm-card', 'code': 'CARD', 'type': 'NON_CASH'}},
+        ],
+        'shift': {'shiftType': 'MANUAL', 'defaultHouseBank': '500000', 'roundingMode': 'UP', 'timezone': 'Asia/Jakarta', 'currencyLabel': 'Rp'},
+        'tables': [
+          {'id': 'tbl-a1', 'name': 'A1', 'enabled': true, 'capacity': 4},
+          {'id': 'tbl-a2', 'name': 'A2', 'enabled': true, 'capacity': 6},
+        ],
+        'printRoutings': [],
+      };
+
   http.Response _json(int status, Object body) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
@@ -65,19 +137,76 @@ class FakeBackend {
         return _json(200, {
           'tenantId': 't1',
           'versions': {
-            for (final e in _serverVersions.entries) e.key: {'version': e.value, 'updatedAt': DateTime.now().toIso8601String()},
+            for (final e in (_serverVersions.isEmpty ? const {'MASTER': 0, 'OUTLET': 0, 'FORMAT': 0, 'MEDIA': 0} : _serverVersions).entries) e.key: {'version': e.value, 'updatedAt': DateTime.now().toIso8601String()},
           },
           'ttl': {'nonCredentialDays': 3},
         });
       case '/api/pos/config/sync':
         return _json(200, {
           'tenantId': 't1',
-          'needsFull': <String>[],
-          'upToDate': ['MASTER', 'OUTLET', 'FORMAT', 'MEDIA'],
-          'full': {},
+          'needsFull': ['MASTER', 'OUTLET'],
+          'upToDate': ['FORMAT', 'MEDIA'],
+          'full': {'MASTER': northstarMaster(), 'OUTLET': northstarOutlet()},
         });
+      case '/api/pos/orders':
+        if (req.method == 'POST') {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          return _json(201, {
+            'order': {
+              'id': 'order-1',
+              'status': 'OPEN',
+              'tableName': body['tableName'],
+              'openedById': 'u1',
+              'openedAt': DateTime.now().toIso8601String(),
+              'lines': <Map<String, dynamic>>[],
+            },
+          });
+        }
+        return _json(200, {'orders': <Map<String, dynamic>>[]});
       default:
+        final addLineOrder = _addLineOrderId(path, req.method);
+        if (addLineOrder != null) {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          final itemId = body['itemId'] as String?;
+          final level = ((body['priceLevelIndex'] as num?) ?? 0).toInt();
+          final base = itemId == 'item-espresso' ? (level == 1 ? 32000 : 25000) : (level == 1 ? 55000 : 45000);
+          final modExtra = (body['mods'] as List? ?? const []).fold<double>(0, (s, m) {
+            final id = (m as Map)['modifierId'] as String?;
+            return s + ({'mod-egg': 5000, 'mod-crackers': 2000}[id] ?? 0);
+          });
+          return _json(201, {
+            'line': {
+              'id': 'line-$itemId',
+              'orderId': addLineOrder,
+              'itemId': itemId,
+              'priceLevelIndex': level,
+              'itemName': itemId == 'item-espresso' ? 'Espresso' : 'Nasi Goreng Special',
+              'qty': body['qty'] ?? 1,
+              'unitPrice': base + modExtra,
+              'vatMode': itemId == 'item-espresso' ? 'EXCLUDE' : 'INCLUDE',
+              'scMode': 'NONE',
+              'sentToKitchen': false,
+              'mods': body['mods'] ?? const [],
+            },
+          });
+        }
+        if (req.method == 'POST' && path.endsWith('/send-cart')) {
+          return _json(200, {
+            'batch': {'id': 'b1', 'label': 'A', 'sequence': 0},
+            'sent': <Map<String, dynamic>>[],
+            'printJobs': <Map<String, dynamic>>[],
+          });
+        }
         return _json(404, {'error': 'not_found'});
     }
   }
+
+  // Route matchers (keep the switch small).
+  static final _ordersAddLineRe = RegExp(r'^/api/pos/orders/([^/]+)/lines/?$');
+  String? _addLineOrderId(String path, String method) {
+    if (method != 'POST') return null;
+    final m = _ordersAddLineRe.firstMatch(path);
+    return m?.group(1);
+  }
+  bool betterThan(RegExp r, String path) => r.hasMatch(path);
 }
