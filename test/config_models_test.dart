@@ -126,6 +126,47 @@ void main() {
       expect(it.vatMode, money.VatScMode.exclude);
       expect(it.vatRate, 11.0);
     });
+
+    test('top-level priceLevels catalog parses tolerantly (missing → empty)', () {
+      // Northstar ships a distinct levelIndex/label catalog in MASTER.
+      final master = masterFixture();
+      master['priceLevels'] = [
+        {'levelIndex': 0, 'label': null, 'price': '0'},
+        {'levelIndex': 1, 'label': 'Double', 'price': '0'},
+      ];
+      final cfg = TenantConfig.fromSyncPayloads(master, outletFixture());
+      expect(cfg.priceLevels, hasLength(2));
+      expect(cfg.priceLevels.first.levelIndex, 0);
+      expect(cfg.priceLevels[1].label, 'Double');
+    });
+
+    test('orderTree builds from menu-layout nodes (no category fallback)', () {
+      final master = masterFixture();
+      master['menuLayouts'] = [
+        {
+          'id': 'l-main',
+          'name': 'Main',
+          'active': true,
+          'nodes': [
+            {'id': 'n-drink', 'parentId': null, 'name': 'Drinks', 'sortOrder': 0, 'assignments': [{'itemId': 'item-coffee'}]},
+          ],
+        },
+      ];
+      final cfg = TenantConfig.fromSyncPayloads(master, outletFixture());
+      final tree = cfg.orderTree();
+      expect(tree, hasLength(1));
+      expect(tree.first.name, 'Drinks');
+      expect(tree.first.itemIds, ['item-coffee']);
+      // assignment to a disabled item is pruned
+      master['menuLayouts'][0]['nodes'] = [
+        {
+          'id': 'n-drink', 'parentId': null, 'name': 'Drinks', 'sortOrder': 0,
+          'assignments': [{'itemId': 'item-coffee'}, {'itemId': 'item-disabled'}],
+        },
+      ];
+      final pruned = TenantConfig.fromSyncPayloads(master, outletFixture()).orderTree();
+      expect(pruned.first.itemIds, ['item-coffee']);
+    });
   });
 
   group('MenuLayout.buildTree (flat + nested)', () {

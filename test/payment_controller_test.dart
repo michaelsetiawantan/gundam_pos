@@ -116,13 +116,13 @@ void main() {
   });
 
   group('ReceiptSequencer', () {
-    test('increments seq and resets per date', () {
+    test('increments seq and resets per date', () async {
       final seq = ReceiptSequencer();
       final d1 = DateTime(2026, 9, 17, 10, 0);
-      expect(seq.next(shortcode: 'NS', at: d1), 'NS-20260917-10:00-0000001');
-      expect(seq.next(shortcode: 'NS', at: d1.add(const Duration(minutes: 5))), 'NS-20260917-10:05-0000002');
+      expect(await seq.next(shortcode: 'NS', at: d1), 'NS-20260917-10:00-0000001');
+      expect(await seq.next(shortcode: 'NS', at: d1.add(const Duration(minutes: 5))), 'NS-20260917-10:05-0000002');
       final d2 = DateTime(2026, 9, 18, 9, 30);
-      expect(seq.next(shortcode: 'NS', at: d2), 'NS-20260918-09:30-0000001');
+      expect(await seq.next(shortcode: 'NS', at: d2), 'NS-20260918-09:30-0000001');
     });
   });
 }

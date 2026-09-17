@@ -32,7 +32,8 @@ class _MoreScreenState extends State<MoreScreen> {
   }
 
   Future<void> _drain() async {
-    widget.session.drainPush();
+    await widget.session.drainPush();
+    if (!mounted) return;
     _toast('Pending push queue cleared (acked).');
   }
 

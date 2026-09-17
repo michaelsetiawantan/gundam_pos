@@ -5,9 +5,13 @@ import 'package:flutter/foundation.dart';
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/data/config_cache.dart';
+import 'package:gundam_pos/data/local_db.dart';
+import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// App-level session controller: owns device activation, POS login/
 /// single-active handling, the outlet config sync and the logout release.
@@ -18,13 +22,19 @@ class AppSession extends ChangeNotifier {
   AppSession({
     required PosApi posApi,
     required SessionStore sessionStore,
+    ReceiptSequenceStore? receiptSequence,
+    PushStore? pushStore,
     DateTime Function()? now,
   })  : _posApi = posApi,
         _store = sessionStore,
+        _receipts = ReceiptSequencer(store: receiptSequence ?? MemoryReceiptSequenceStore()),
+        _push = pushStore ?? MemoryPushStore(),
         _now = now ?? DateTime.now;
 
   final PosApi _posApi;
   final SessionStore _store;
+  final ReceiptSequencer _receipts;
+  final PushStore _push;
   final DateTime Function() _now;
 
   PosContext ctx = const PosContext();
@@ -36,24 +46,25 @@ class AppSession extends ChangeNotifier {
 
   /// Outbox for deferred pushes (e.g. offline transactions). The MVP settles
   /// directly against the server; this stays empty but enqueues and drains are
-  /// exercised by the sync UI. Persistence to SQLite `pending_sync` is the
-  /// upgrade path.
-  final List<Map<String, dynamic>> _pendingPush = [];
+  /// exercised by the sync UI. Backed by [PushStore] (sqflite `pending_sync` on
+  /// device) so an offline queue survives restart.
+  int get pendingPushCount => _push.count;
 
   ConfigCache? _configCache;
 
-  int get pendingPushCount => _pendingPush.length;
+  /// Shared, persisted (device-side) receipt sequencer for the settle flow.
+  ReceiptSequencer get receipts => _receipts;
 
   void attachConfigCache(ConfigCache cache) => _configCache = cache;
 
-  void enqueuePush(String entityType, String entityId, Object payload) {
-    _pendingPush.add({'type': entityType, 'id': entityId, 'payload_json': payload});
+  Future<void> enqueuePush(String entityType, String entityId, Object payload) async {
+    await _push.enqueue(entityType, entityId, payload);
     notifyListeners();
   }
 
   /// Drain the outbox (mark acked). Idempotent; the queue is cleared on ack.
-  void drainPush() {
-    _pendingPush.clear();
+  Future<void> drainPush() async {
+    await _push.drain();
     notifyListeners();
   }
 
@@ -326,7 +337,22 @@ class AppDependencies {
       baseUrl: resolveBaseUrl(),
       authProvider: () => ref[0]?.authHeaders(),
     );
-    final session = AppSession(posApi: PosApi(client), sessionStore: st);
+    // Persist receipt sequencing + the push outbox to SQLite so they survive
+    // restart. The device path comes from the platform support dir; when that
+    // is unavailable (CI/test host) it degrades to an in-memory DB.
+    final posStore = SqlitePosStore(
+      localDb: LocalDb(),
+      pathProvider: () async {
+        final dir = await getApplicationSupportDirectory();
+        return '${dir.path}/gundam_pos/gundam.db';
+      },
+    );
+    final session = AppSession(
+      posApi: PosApi(client),
+      sessionStore: st,
+      receiptSequence: posStore,
+      pushStore: posStore,
+    );
     ref[0] = session;
     return session;
   }

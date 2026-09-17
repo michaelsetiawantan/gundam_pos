@@ -319,6 +319,7 @@ class TenantConfig {
     required this.paymentMethods,
     required this.shift,
     required this.tables,
+    this.priceLevels = const [],
   });
 
   factory TenantConfig.fromSyncPayloads(Map<String, dynamic> master, Map<String, dynamic> outlet) {
@@ -343,6 +344,12 @@ class TenantConfig {
             .toList() ??
         const <TableInfo>[];
     final shiftOut = outlet['shift'] as Map<String, dynamic>?;
+    // Top-level negotiated price-level catalog (distinct levelIndex/label).
+    // Tolerant: items may also carry per-item priceLevels; missing here → [].
+    final levels = (master['priceLevels'] as List?)
+            ?.map((e) => PriceLevel.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        const <PriceLevel>[];
     return TenantConfig(
       items: items,
       categories: cats,
@@ -350,6 +357,7 @@ class TenantConfig {
       paymentMethods: payments.where((p) => p.enabled).toList(),
       shift: shiftOut == null ? ShiftConfig.defaultValue() : ShiftConfig.fromJson(shiftOut),
       tables: tables,
+      priceLevels: levels,
     );
   }
 
@@ -359,6 +367,9 @@ class TenantConfig {
   final List<OutletPaymentMethod> paymentMethods;
   final ShiftConfig shift;
   final List<TableInfo> tables;
+  /// Distinct price-level catalog shipped by MASTER (levelIndex + label). Used
+  /// to drive size/level selection labels across the outlet.
+  final List<PriceLevel> priceLevels;
 
   MenuItem? itemById(String id) {
     for (final i in items) {

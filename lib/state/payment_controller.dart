@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
+import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/receipt.dart';
@@ -106,7 +107,7 @@ class PaymentController extends ChangeNotifier {
     error = null;
     notifyListeners();
     try {
-      final id = _receipts.next(shortcode: shortcode ?? 'POS', at: DateTime.now());
+      final id = await _receipts.next(shortcode: shortcode ?? 'POS', at: DateTime.now());
       final r = await posApi.settle(
         orderId,
         payments: [
@@ -149,22 +150,22 @@ class PaymentController extends ChangeNotifier {
 }
 
 /// Device-side receipt sequence (reset 00:00 per device per LOCAL-SCHEMA).
-/// Persistence to SQLite `receipt_sequence` is the upgrade path; the default
-/// keeps a per-process counter so the MVP flow runs end to end.
+/// Persisted through a [ReceiptSequenceStore] (sqflite `receipt_sequence` on
+/// device; in-memory in tests/fallback) so numbering survives app restart.
 class ReceiptSequencer {
-  ReceiptSequencer({DateTime Function()? now}) : _now = now ?? DateTime.now;
+  ReceiptSequencer({DateTime Function()? now, ReceiptSequenceStore? store})
+      : _now = now ?? DateTime.now,
+        _store = store ?? MemoryReceiptSequenceStore();
 
   final DateTime Function() _now;
-  final Map<String, int> _byDate = {};
-
-  int _last(String date) => _byDate[date] ?? 0;
+  final ReceiptSequenceStore _store;
 
   /// Returns the next receipt id: `[shortcode]-[YYYYMMDD]-[HH:MM]-NNNNNNN`.
-  String next({required String shortcode, DateTime? at}) {
+  /// The sequence is atomically incremented per (device, day).
+  Future<String> next({required String shortcode, DateTime? at}) async {
     final now = at ?? _now();
     final date = dateStamp(now);
-    final seq = _last(date) + 1;
-    _byDate[date] = seq;
+    final seq = await _store.next(shortcode, date);
     return makeReceiptId(shortcode: shortcode, at: now, seq: seq);
   }
 }
