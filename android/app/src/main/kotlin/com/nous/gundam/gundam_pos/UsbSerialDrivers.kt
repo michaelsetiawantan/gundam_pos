@@ -1,13 +1,20 @@
 package com.nous.gundam.gundam_pos
 
 /**
- * USB-serial bridge-chip drivers built INTO the APK — no separate driver app.
+ * USB printer drivers built INTO the APK — no separate driver app.
  *
- * Each chip is described as pure data + small pure functions:
- *   * [matches]      — how the chip is recognised on the bus (vendor/product id);
- *   * [initSequence] — the USB control-transfer sequence that brings the chip up
- *                      for 8N1 at a given baud (line coding, and for FTDI the
- *                      baud divisor + latency timer).
+ * Two kinds live here:
+ *   * USB-serial bridge chips (CDC-ACM, CH340/CH341, PL2303, FTDI, CP210x) —
+ *     described as pure data + small pure functions:
+ *       - [matches]      — how the chip is recognised by vendor/product id;
+ *       - [initSequence] — the control-transfer sequence that brings it up for
+ *                          8N1 at a given baud (line coding, baud divisor, …);
+ *   * printers that need NO serial bridge at all — USB Pr interface class
+ *     (0x07) and vendor-specific (0xFF). These are recognised by INTERFACE
+ *     class, not VID/PID ([matches] answers false), and do NOT run any line
+ *     coding ([initSequence] is empty): the raw ESC/POS bytes go straight out
+ *     over the interface's bulk OUT endpoint. Their interface/endpoint
+ *     selection rule lives in [UsbPrinterChannel].
  *
  * [UsbPrinterChannel] claims the interface and replays [initSequence] over a
  * real [android.hardware.usb.UsbDeviceConnection], then writes with bulk OUT.
@@ -31,12 +38,27 @@ class UsbControl(
 private const val HOST_TO_DEVICE_VENDOR = 0x40 // out | vendor | device
 private const val HOST_TO_DEVICE_CLASS = 0x21 // out | class  | interface
 
-/** Supported chip ids — the exact strings the web `usbChip` field is expected to send. */
+/**
+ * Supported chip ids — the exact strings the web `usbChip` field accepts,
+ * PLUS the shorter canonical ids kept for backwards compatibility. The web
+ * vocabulary (web `USB_CHIPS`) is:
+ *   CDC_ACM | CH340_CH341 | PL2303 | FTDI_FT232R | FTDI_FT231X | CP210X |
+ *   USB_PRINTER_CLASS | USB_VENDOR_SPECIFIC
+ * [canonical] folds the web codes onto the canonical driver ids below, so an
+ * existing `CH340`/`FTDI` config keeps working and the new codes resolve too.
+ */
 object UsbChipIds {
     const val CDC_ACM = "CDC_ACM"
     const val CH340 = "CH340"
     const val PL2303 = "PL2303"
     const val FTDI = "FTDI"
+    const val CP210X = "CP210X"
+
+    /** USB printer class (interface 0x07) — raw bulk write, no serial init. */
+    const val USB_PRINTER_CLASS = "USB_PRINTER_CLASS"
+
+    /** Vendor-specific (interface 0xFF) bulk printer — raw bulk write, no serial init. */
+    const val USB_VENDOR_SPECIFIC = "USB_VENDOR_SPECIFIC"
 
     /** Canonicalise a configured chip string (tolerant of aliases / casing). */
     fun canonical(raw: String?): String? {
@@ -44,9 +66,13 @@ object UsbChipIds {
         return when (v) {
             "", "AUTO", "ANY" -> null
             "CDC", "CDCACM", "ACM", "CDC_ACM" -> CDC_ACM
-            "CH340", "CH341", "CH340G", "CH341A", "CH34X" -> CH340
-            "PL2303", "PL2303HX", "PL2303HXA", "PROLIFIC" -> PL2303
-            "FTDI", "FT232", "FT232R", "FT231", "FT231X", "FTDI_FT232R" -> FTDI
+            "CH340", "CH341", "CH340G", "CH341A", "CH34X", "CH340_CH341", "CH340_341" -> CH340
+            "PL2303", "PL2303HX", "PL2303HXA", "PL2303HXD", "PROLIFIC" -> PL2303
+            "FTDI", "FT232", "FT232R", "FT231", "FT231X", "FTDI_FT232R", "FTDI_FT231X", "FT234X" -> FTDI
+            "CP210X", "CP2101", "CP2102", "CP2102N", "CP2103", "CP2104", "CP2105", "CP2108",
+            "SILABS", "SILICON_LABS", "SI_LABS" -> CP210X
+            "USB_PRINTER_CLASS", "PRINTER_CLASS", "USB_PRINTER", "PRINTER", "RAW_USB" -> USB_PRINTER_CLASS
+            "USB_VENDOR_SPECIFIC", "VENDOR_SPECIFIC", "USB_VENDOR", "VENDOR" -> USB_VENDOR_SPECIFIC
             else -> v
         }
     }
@@ -258,9 +284,105 @@ object FtdiDriver : UsbSerialDriver {
     }
 }
 
-/** The four chips built into this APK, in match-priority order. */
+/**
+ * Silicon Labs CP210x (CP2101/2/3/4/9 single UART, CP2105/CP2108 multi-UART).
+ *   Vendor  0x10C4
+ *   Products 0xEA60 (CP2101/CP2102/CP2103/CP2104/CP2109 — same id),
+ *            0xEAB0 (CP2102N / common clone id),
+ *            0xEA70 (CP2105), 0xEA71 (CP2108), 0xEA63 (CP2104)
+ *
+ * Init = the usb-serial-for-android `Cp21xxSerialDriver` sequence, all with
+ * bmRequestType 0x41 (out | vendor | INTERFACE, wIndex = the UART port = the
+ * data interface index, 0 for the single-port parts):
+ *   1. IFC_ENABLE    (0x00): wValue 0x0001 — enable the UART;
+ *   2. SET_BAUDRATE  (0x1E): wValue 0, 4-byte little-endian baud in the data
+ *      phase — for CP210x the payload is the requested baud rate in Hz;
+ *   3. SET_LINE_CTL  (0x03): wValue 0x0800 — 8 data bits, 1 stop, no parity;
+ *   4. SET_MHS       (0x07): wValue 0x0303 — DTR (0x101) | RTS (0x202);
+ *   5. SET_FLOW      (0x13): wValue 0x0000 — flow control off.
+ */
+object Cp210xDriver : UsbSerialDriver {
+    override val id = UsbChipIds.CP210X
+
+    private const val VID = 0x10C4
+    private val pids = setOf(0xEA60, 0xEAB0, 0xEA70, 0xEA71, 0xEA63)
+
+    // out | vendor | interface (usb-serial-for-android REQTYPE_HOST_TO_DEVICE).
+    private const val REQTYPE_HOST_TO_DEVICE = 0x41
+    private const val REQ_IFC_ENABLE = 0x00
+    private const val REQ_SET_LINE_CTL = 0x03
+    private const val REQ_SET_MHS = 0x07
+    private const val REQ_SET_FLOW = 0x13
+    private const val REQ_SET_BAUDRATE = 0x1E
+
+    private const val UART_ENABLE = 0x0001
+    private const val LINE_CTL_8N1 = 0x0800 // 8 data bits, 1 stop, no parity
+    private const val MHS_DTR_RTS = 0x0303 // DTR 0x101 | RTS 0x202
+
+    override fun matches(vendorId: Int, productId: Int): Boolean = vendorId == VID && productId in pids
+
+    override fun initSequence(baud: Int): List<UsbControl> {
+        val rate = baud.coerceIn(300, 1_000_000)
+        val le = byteArrayOf(
+            (rate and 0xFF).toByte(),
+            ((rate shr 8) and 0xFF).toByte(),
+            ((rate shr 16) and 0xFF).toByte(),
+            ((rate shr 24) and 0xFF).toByte(),
+        )
+        return listOf(
+            UsbControl(REQTYPE_HOST_TO_DEVICE, REQ_IFC_ENABLE, UART_ENABLE, 0x0000, null),
+            UsbControl(REQTYPE_HOST_TO_DEVICE, REQ_SET_BAUDRATE, 0x0000, 0x0000, le),
+            UsbControl(REQTYPE_HOST_TO_DEVICE, REQ_SET_LINE_CTL, LINE_CTL_8N1, 0x0000, null),
+            UsbControl(REQTYPE_HOST_TO_DEVICE, REQ_SET_MHS, MHS_DTR_RTS, 0x0000, null),
+            UsbControl(REQTYPE_HOST_TO_DEVICE, REQ_SET_FLOW, 0x0000, 0x0000, null),
+        )
+    }
+}
+
+/**
+ * USB printer-class printers (interface class 0x07, subclass 0x01, protocol
+ * 0x02 bidirectional / 0x01 unidirectional). Most receipt/thermal printers
+ * that are NOT a serial bridge enumerate as this — they need NO serial line
+ * coding at all, just the printer interface's bulk OUT endpoint.
+ *
+ * Recognised by INTERFACE class in [UsbPrinterChannel], not by VID/PID, so
+ * [matches] is false and [initSequence] is empty (raw bulk write only).
+ */
+object PrinterClassDriver : UsbSerialDriver {
+    override val id = UsbChipIds.USB_PRINTER_CLASS
+
+    override fun matches(vendorId: Int, productId: Int): Boolean = false
+
+    override fun initSequence(baud: Int): List<UsbControl> = emptyList()
+}
+
+/**
+ * Vendor-specific (interface class 0xFF) bulk printers — the last-resort path
+ * for a printer that is neither a known serial bridge nor printer-class but
+ * exposes a vendor-specific interface with a bulk OUT endpoint.
+ *
+ * Recognised by INTERFACE class in [UsbPrinterChannel], not by VID/PID, so
+ * [matches] is false and [initSequence] is empty (raw bulk write only).
+ */
+object VendorSpecificDriver : UsbSerialDriver {
+    override val id = UsbChipIds.USB_VENDOR_SPECIFIC
+
+    override fun matches(vendorId: Int, productId: Int): Boolean = false
+
+    override fun initSequence(baud: Int): List<UsbControl> = emptyList()
+}
+
+/** The drivers built into this APK, in match-priority order.
+ *
+ * [PrinterClassDriver] and [VendorSpecificDriver] are recognised by INTERFACE
+ * class, not VID/PID, so [driverFor] never returns them; [byId] does, and
+ * [UsbPrinterChannel] picks them by scanning the device's interfaces.
+ */
 object UsbSerialDrivers {
-    val all: List<UsbSerialDriver> = listOf(Ch34xDriver, Pl2303Driver, FtdiDriver, CdcAcmDriver)
+    val all: List<UsbSerialDriver> = listOf(
+        Ch34xDriver, Pl2303Driver, FtdiDriver, Cp210xDriver, CdcAcmDriver,
+        PrinterClassDriver, VendorSpecificDriver,
+    )
 
     fun byId(id: String?): UsbSerialDriver? {
         val c = UsbChipIds.canonical(id) ?: return null

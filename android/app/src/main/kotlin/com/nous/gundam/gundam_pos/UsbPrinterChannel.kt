@@ -19,8 +19,18 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
 /**
- * Android USB Host transport for POS thermal printers, with the four common
- * serial bridge chips built in (see [UsbSerialDrivers]).
+ * Android USB Host transport for POS thermal printers, with the common serial
+ * bridge chips built in (see [UsbSerialDrivers]) plus direct raw-bulk printing
+ * for USB printer-class (0x07) and vendor-specific (0xFF) printers.
+ *
+ * Interface selection rule (used for [PrinterClassDriver] and
+ * [VendorSpecificDriver], which run no serial init):
+ *   1. prefer a printer-class interface (class 0x07, subclass 0x01) with a
+ *      bulk OUT endpoint — protocol 0x02 bidirectional before 0x01;
+ *   2. otherwise the first vendor-specific (class 0xFF) interface with a bulk
+ *      OUT endpoint.
+ * If neither is present the open fails typed (`offline`, "no bulk OUT …"),
+ * never a silent write.
  *
  * Mirrors [BluetoothPrinterChannel]: every failure is a typed `{state, detail}`
  * map (never a thrown PlatformException), so a printer fault can never kill a
@@ -112,9 +122,20 @@ class UsbPrinterChannel(private val activity: Activity) : MethodChannel.MethodCa
         return out
     }
 
-    /** The driver for an attached device: by vendor/product id, else a CDC-ACM class match. */
-    private fun driverFor(d: UsbDevice): UsbSerialDriver? =
-        UsbSerialDrivers.driverFor(d.vendorId, d.productId) ?: if (isCdcAcm(d)) CdcAcmDriver else null
+    /**
+     * The driver for an attached device: vendor/product id first (CDC-ACM as a
+     * class fallback), then a printer-class interface, then a vendor-specific
+     * interface with a bulk OUT endpoint.
+     */
+    private fun driverFor(d: UsbDevice): UsbSerialDriver? {
+        UsbSerialDrivers.driverFor(d.vendorId, d.productId)?.let { return it }
+        return when {
+            isCdcAcm(d) -> CdcAcmDriver
+            printerClassInterface(d) != null -> PrinterClassDriver
+            vendorSpecificInterface(d) != null -> VendorSpecificDriver
+            else -> null
+        }
+    }
 
     /** True when any interface declares the CDC Communication class (0x02) or CDC-Data (0x0A). */
     private fun isCdcAcm(d: UsbDevice): Boolean {
@@ -224,12 +245,17 @@ class UsbPrinterChannel(private val activity: Activity) : MethodChannel.MethodCa
             result.success(failure("unsupported", "Unsupported USB chip '${chip ?: "?"}'."))
             return
         }
-        if (!driver.matches(device.vendorId, device.productId) && !(driver === CdcAcmDriver && isCdcAcm(device))) {
+        if (!driverAccepts(driver, device)) {
             result.success(
                 failure(
                     "unsupported",
-                    "Configured chip ${driver.id} does not match the attached device " +
-                        "(%04X:%04X).".format(device.vendorId, device.productId),
+                    if (driver is PrinterClassDriver || driver is VendorSpecificDriver) {
+                        "Configured chip ${driver.id} but no matching USB interface (class) on the attached device (%04X:%04X)."
+                            .format(device.vendorId, device.productId)
+                    } else {
+                        "Configured chip ${driver.id} does not match the attached device (%04X:%04X)."
+                            .format(device.vendorId, device.productId)
+                    },
                 ),
             )
             return
@@ -244,7 +270,7 @@ class UsbPrinterChannel(private val activity: Activity) : MethodChannel.MethodCa
 
     private fun openBlocking(mgr: UsbManager, device: UsbDevice, driver: UsbSerialDriver, baud: Int): Map<String, Any?> {
         closeInternal()
-        val iface = findOutInterface(device)
+        val iface = selectInterface(device, driver)
             ?: return failure("offline", "No writable interface/endpoint on the USB printer.")
         val endpoint = iface.firstBulkOut()
             ?: return failure("offline", "No bulk OUT endpoint on the USB printer interface.")
@@ -254,22 +280,75 @@ class UsbPrinterChannel(private val activity: Activity) : MethodChannel.MethodCa
             runCatching { conn.close() }
             return failure("offline", "Could not claim the USB interface (busy?).")
         }
+        // Printer-class / vendor-specific devices run NO line coding (empty init).
         for (c in driver.initSequence(baud)) {
             conn.controlTransfer(c.requestType, c.request, c.value, c.index, c.data, c.data?.size ?: 0, 1000)
         }
         connection = conn
         claimed = iface
         outEndpoint = endpoint
-        return mapOf(
-            "state" to "ready",
-            "detail" to "Opened ${driver.id} on %04X:%04X at $baud baud.".format(device.vendorId, device.productId),
-        )
+        val how = if (driver is PrinterClassDriver || driver is VendorSpecificDriver) {
+            "Opened ${driver.id} (raw bulk) on %04X:%04X.".format(device.vendorId, device.productId)
+        } else {
+            "Opened ${driver.id} on %04X:%04X at $baud baud.".format(device.vendorId, device.productId)
+        }
+        return mapOf("state" to "ready", "detail" to how)
+    }
+
+    /** True when the attached device actually presents what [driver] needs. */
+    private fun driverAccepts(driver: UsbSerialDriver, device: UsbDevice): Boolean = when (driver) {
+        PrinterClassDriver -> printerClassInterface(device) != null
+        VendorSpecificDriver -> vendorSpecificInterface(device) != null
+        CdcAcmDriver -> driver.matches(device.vendorId, device.productId) || isCdcAcm(device)
+        else -> driver.matches(device.vendorId, device.productId)
+    }
+
+    /**
+     * The interface to claim for [driver]: the printer-class interface for
+     * [PrinterClassDriver], the vendor-specific one for [VendorSpecificDriver],
+     * else the first interface with a bulk OUT endpoint (the serial bridges).
+     */
+    private fun selectInterface(device: UsbDevice, driver: UsbSerialDriver): UsbInterface? = when (driver) {
+        PrinterClassDriver -> printerClassInterface(device)
+        VendorSpecificDriver -> vendorSpecificInterface(device)
+        else -> findOutInterface(device)
     }
 
     private fun findOutInterface(device: UsbDevice): UsbInterface? {
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             if (iface.firstBulkOut() != null) return iface
+        }
+        return null
+    }
+
+    /**
+     * The printer-class interface (class 0x07, subclass 0x01) with a bulk OUT
+     * endpoint. Bidirectional (protocol 0x02) is preferred over unidirectional
+     * (0x01); a matching interface without a bulk OUT endpoint is skipped.
+     */
+    private fun printerClassInterface(device: UsbDevice): UsbInterface? {
+        var unidirectional: UsbInterface? = null
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            if (iface.interfaceClass != UsbConstants.USB_CLASS_PRINTER) continue
+            if (iface.interfaceSubclass != 0x01) continue
+            if (iface.firstBulkOut() == null) continue
+            when (iface.interfaceProtocol) {
+                0x02 -> return iface // bidirectional — preferred
+                0x01 -> if (unidirectional == null) unidirectional = iface
+            }
+        }
+        return unidirectional
+    }
+
+    /** The first vendor-specific (class 0xFF) interface with a bulk OUT endpoint. */
+    private fun vendorSpecificInterface(device: UsbDevice): UsbInterface? {
+        for (i in 0 until device.interfaceCount) {
+            val iface = device.getInterface(i)
+            if (iface.interfaceClass == UsbConstants.USB_CLASS_VENDOR_SPEC && iface.firstBulkOut() != null) {
+                return iface
+            }
         }
         return null
     }

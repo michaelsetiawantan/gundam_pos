@@ -3,11 +3,13 @@
   USB device filter for Android's ACTION_USB_DEVICE_ATTACHED hand-off.
   When one of these printers is plugged in, Android offers to open Gundam POS.
 
-  Covers the four bridge chips built into the APK (see UsbSerialDrivers.kt):
+  Covers every driver built into the APK (see UsbSerialDrivers.kt):
     CH340/CH341  vendor 0x1A86 (6790)
     PL2303       vendor 0x067B (1659)
     FTDI         vendor 0x0403 (1027)
-  plus the common CDC-ACM serial vendors (matched by interface class at runtime).
+    CP210x       vendor 0x10C4 (4292)
+    CDC-ACM      matched by interface class 0x02/0x0A at runtime
+    printer class (0x07) and vendor-specific (0xFF) — matched by class at runtime
 
   Numbers are DECIMAL (the <usb-device> attributes are decimal, not hex).
 -->
@@ -28,6 +30,21 @@
     <usb-device vendor-id="1027" product-id="24596" /> <!-- 0403:6014 FT232H  -->
     <usb-device vendor-id="1027" product-id="24592" /> <!-- 0403:6010 FT2232H -->
     <usb-device vendor-id="1027" product-id="24593" /> <!-- 0403:6011 FT4232H -->
+
+    <!-- Silicon Labs CP210x (CP2101/2/3/4/9, CP2105, CP2108) -->
+    <usb-device vendor-id="4292" product-id="60000" /> <!-- 10C4:EA60 CP2102 family -->
+    <usb-device vendor-id="4292" product-id="60080" /> <!-- 10C4:EAB0 CP2102N / clone -->
+    <usb-device vendor-id="4292" product-id="60016" /> <!-- 10C4:EA70 CP2105 -->
+    <usb-device vendor-id="4292" product-id="60017" /> <!-- 10C4:EA71 CP2108 -->
+    <usb-device vendor-id="4292" product-id="60003" /> <!-- 10C4:EA63 CP2104 -->
+
+    <!-- USB printer class (0x07 / subclass 0x01) — raw bulk, no serial init -->
+    <usb-device class="7" subclass="1" protocol="1" /> <!-- unidirectional -->
+    <usb-device class="7" subclass="1" protocol="2" /> <!-- bidirectional  -->
+
+    <!-- Vendor-specific (0xFF) bulk printers — intentionally broad: the device
+         has no fixed VID/PID, so only the interface class can be matched. -->
+    <usb-device class="255" />
 
     <!-- Generic CDC-ACM serial vendors (matched by class 0x02/0x0A at runtime) -->
     <usb-device vendor-id="9025" />  <!-- 0x2341 Arduino SA        -->

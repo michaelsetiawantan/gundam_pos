@@ -1,0 +1,143 @@
+{
+  "dialects": {
+    "CITIZEN": {
+      "implemented": false
+    },
+    "ESC/POS": {
+      "implemented": true
+    },
+    "ESC/POS-CLONE": {
+      "implemented": true
+    },
+    "STAR": {
+      "implemented": false
+    }
+  },
+  "dialectAliases": {
+    "CITIZEN/ESCPOS": "CITIZEN",
+    "CITIZEN/SYSTEM": "CITIZEN",
+    "CLONE": "ESC/POS-CLONE",
+    "EPSON": "ESC/POS",
+    "EPSON/ESCPOS": "ESC/POS",
+    "ESC/POS/CLONE": "ESC/POS-CLONE",
+    "ESC/POS/EPSON": "ESC/POS",
+    "ESC/POS/GENERIC": "ESC/POS-CLONE",
+    "ESCPOS": "ESC/POS",
+    "ESCPOS/CLONE": "ESC/POS-CLONE",
+    "ESCPOS/GENERIC": "ESC/POS-CLONE",
+    "GAINSCHA": "ESC/POS-CLONE",
+    "GENERIC": "ESC/POS-CLONE",
+    "STAR/LINE": "STAR",
+    "STAR/LINE/MODE": "STAR",
+    "STAR/LINE/MODE/PRINTER": "STAR",
+    "STARLINE": "STAR",
+    "XPRINTER": "ESC/POS-CLONE"
+  },
+  "codePages": {
+    "CP1252": {
+      "selector": 16,
+      "implemented": true
+    },
+    "CP437": {
+      "selector": 0,
+      "implemented": true
+    },
+    "CP850": {
+      "selector": 2,
+      "implemented": true
+    },
+    "CP852": {
+      "selector": 18,
+      "implemented": true
+    },
+    "CP858": {
+      "selector": 19,
+      "implemented": true
+    },
+    "CP860": {
+      "selector": 3,
+      "implemented": true
+    },
+    "CP863": {
+      "selector": 4,
+      "implemented": true
+    },
+    "CP865": {
+      "selector": 5,
+      "implemented": true
+    },
+    "CP866": {
+      "selector": 17,
+      "implemented": true
+    },
+    "KATAKANA": {
+      "selector": 1,
+      "implemented": true
+    },
+    "UTF-8": {
+      "selector": null,
+      "implemented": false
+    }
+  },
+  "codePageAliases": {
+    "1252": "CP1252",
+    "437": "CP437",
+    "850": "CP850",
+    "852": "CP852",
+    "858": "CP858",
+    "860": "CP860",
+    "863": "CP863",
+    "865": "CP865",
+    "866": "CP866",
+    "CANADIAN": "CP863",
+    "CANADIANFRENCH": "CP863",
+    "CP850EURO": "CP858",
+    "CP932": "KATAKANA",
+    "DOSLATIN1": "CP850",
+    "IBM437": "CP437",
+    "ISO88591": "CP1252",
+    "JIS": "KATAKANA",
+    "KANA": "KATAKANA",
+    "LATIN1": "CP1252",
+    "NORDIC": "CP865",
+    "PC1252": "CP1252",
+    "PC437": "CP437",
+    "PC850": "CP850",
+    "PC852": "CP852",
+    "PC858": "CP858",
+    "PC860": "CP860",
+    "PC863": "CP863",
+    "PC865": "CP865",
+    "PC866": "CP866",
+    "UNICODE": "UTF-8",
+    "UTF": "UTF-8",
+    "UTF8": "UTF-8",
+    "WINDOWS1252": "CP1252",
+    "WPC1252": "CP1252"
+  },
+  "usbChips": {
+    "CDC_ACM": "CDC_ACM",
+    "CH340_CH341": "CH340",
+    "CP210X": "CP210X",
+    "FTDI_FT231X": "FTDI",
+    "FTDI_FT232R": "FTDI",
+    "PL2303": "PL2303",
+    "USB_PRINTER_CLASS": "USB_PRINTER_CLASS",
+    "USB_VENDOR_SPECIFIC": "USB_VENDOR_SPECIFIC"
+  },
+  "capabilities": {
+    "CUTTER": "supportsCutter",
+    "NATIVE_BARCODE": "supportsNativeBarcode",
+    "NATIVE_QR": "supportsNativeQr"
+  },
+  "capabilityConfigKeys": [
+    "supportsCutter",
+    "supportsNativeQr",
+    "supportsNativeBarcode"
+  ],
+  "capabilityAliases": [
+    "cutter",
+    "nativeQr",
+    "nativeBarcode"
+  ]
+}

@@ -30,6 +30,22 @@ bool isTransportKnown(String transport) => kKnownPrintTransports.contains(transp
 
 bool isTransportSupported(String transport) => kSupportedPrintTransports.contains(transport.toUpperCase());
 
+/// The capability codes the web printer/model config may carry (flat or nested
+/// under `printerModel` / `model`), as parsed by [ClientPrinter.fromJson].
+/// Absent → the encoder keeps the dialect's own default.
+const List<String> kPrinterCapabilityKeys = [
+  'supportsCutter',
+  'supportsNativeQr',
+  'supportsNativeBarcode',
+];
+
+/// Short aliases accepted for the same three capability codes.
+const List<String> kPrinterCapabilityAliases = [
+  'cutter',
+  'nativeQr',
+  'nativeBarcode',
+];
+
 /// One printer as synced from the outlet config.
 ///
 /// Optional printer-model metadata (a parallel server change) is consumed
@@ -60,6 +76,10 @@ class ClientPrinter {
     this.model,
     this.protocol,
     this.modelSupportsRasterImage,
+    this.codePage,
+    this.supportsCutter,
+    this.supportsNativeQr,
+    this.supportsNativeBarcode,
   });
 
   /// null → skipped (no id, or a transport the model does not know).
@@ -102,6 +122,34 @@ class ClientPrinter {
       modelSupportsRasterImage: _bool(
         j['modelSupportsRasterImage'] ?? nestedModel['supportsRasterImage'] ?? nestedLegacy['supportsRasterImage'],
       ),
+      // Code page + capability overrides are a parallel (web) vocabulary
+      // addition: absent → null, and the encoder then uses its documented
+      // defaults (CP437; the dialect's own capabilities).
+      codePage: _str(j['codePage'] ??
+          j['code_page'] ??
+          j['codepage'] ??
+          nestedModel['codePage'] ??
+          nestedModel['code_page'] ??
+          nestedLegacy['codePage'] ??
+          nestedLegacy['code_page']),
+      supportsCutter: _bool(j['cutter'] ??
+          j['supportsCutter'] ??
+          nestedModel['cutter'] ??
+          nestedModel['supportsCutter'] ??
+          nestedLegacy['cutter'] ??
+          nestedLegacy['supportsCutter']),
+      supportsNativeQr: _bool(j['nativeQr'] ??
+          j['supportsNativeQr'] ??
+          nestedModel['nativeQr'] ??
+          nestedModel['supportsNativeQr'] ??
+          nestedLegacy['nativeQr'] ??
+          nestedLegacy['supportsNativeQr']),
+      supportsNativeBarcode: _bool(j['nativeBarcode'] ??
+          j['supportsNativeBarcode'] ??
+          nestedModel['nativeBarcode'] ??
+          nestedModel['supportsNativeBarcode'] ??
+          nestedLegacy['nativeBarcode'] ??
+          nestedLegacy['supportsNativeBarcode']),
     );
   }
 
@@ -128,6 +176,13 @@ class ClientPrinter {
   final String? protocol;
   final bool? modelSupportsRasterImage;
 
+  /// Configured code page (ESC t vocabulary) + capability overrides. Absent on
+  /// older payloads → null → the encoder's documented defaults apply.
+  final String? codePage;
+  final bool? supportsCutter;
+  final bool? supportsNativeQr;
+  final bool? supportsNativeBarcode;
+
   /// A shared printer may be used by any device on the outlet.
   final bool shared;
   final bool active;
@@ -142,6 +197,10 @@ class ClientPrinter {
   String get dialect => normalizeDialect(protocol);
 
   bool get dialectRecognized => isKnownDialect(dialect);
+
+  /// true only when this build really encodes the dialect (declared families
+  /// like Star/Citizen are recognised but not implemented).
+  bool get dialectImplemented => isImplementedDialect(dialect);
 
   /// Effective raster capability: the printer's own flag OR the model's.
   bool get effectiveRasterSupport => supportsRasterImage || (modelSupportsRasterImage ?? false);
@@ -159,6 +218,10 @@ class ClientPrinter {
         widthMm: widthMm,
         supportsRasterImage: effectiveRasterSupport,
         dialect: dialect,
+        codePage: codePage,
+        supportsCutter: supportsCutter,
+        supportsNativeQr: supportsNativeQr,
+        supportsNativeBarcode: supportsNativeBarcode,
         retryCount: retryCount,
         retryTimeoutSec: retryTimeoutSec,
       );

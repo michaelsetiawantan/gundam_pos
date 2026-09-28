@@ -1,6 +1,7 @@
 /// Thin client for the `gundam/printer/usb` Android platform channel — the USB
-/// Host transport with the four common serial bridge chips built into the APK
-/// (CDC-ACM, CH340/CH341, PL2303, FTDI).
+/// Host transport with the common serial bridge chips built into the APK
+/// (CDC-ACM, CH340/CH341, PL2303, FTDI, CP210x) plus direct raw-bulk printing
+/// for USB printer-class (0x07) and vendor-specific (0xFF) printers.
 ///
 /// Pure plumbing in the same shape as [BluetoothPrinterChannel]: it never throws
 /// on a printer fault — the Kotlin side answers every call with a typed
@@ -31,8 +32,9 @@ class UsbDeviceInfo {
   final int pid;
   final String name;
 
-  /// Canonical chip id the Kotlin side resolved (`CDC_ACM`|`CH340`|`PL2303`|`FTDI`),
-  /// or '' when the device is not a supported bridge.
+  /// Canonical chip id the Kotlin side resolved (`CDC_ACM`|`CH340`|`PL2303`|
+  /// `FTDI`|`CP210X`|`USB_PRINTER_CLASS`|`USB_VENDOR_SPECIFIC`), or '' when the
+  /// device is not a supported bridge.
   final String chip;
   final String? serial;
   final bool granted;
@@ -65,13 +67,47 @@ const Map<String, List<(int, int)>> kUsbChipDeviceIds = {
     (0x067B, 0x23C3), (0x067B, 0x23D3), (0x067B, 0x23E3), (0x067B, 0x23F3),
   ],
   'FTDI': [(0x0403, 0x6001), (0x0403, 0x6015), (0x0403, 0x6014), (0x0403, 0x6010), (0x0403, 0x6011)],
+  'CP210X': [(0x10C4, 0xEA60), (0x10C4, 0xEAB0), (0x10C4, 0xEA70), (0x10C4, 0xEA71), (0x10C4, 0xEA63)],
 };
 
 /// Vendors whose CDC-ACM (class 0x02/0x0A) interfaces this build drives.
 const Set<int> kCdcAcmVendorIds = {0x2341, 0x2A03, 0x1A86, 0x0483, 0x303A, 0x1EAF, 0x239A, 0x1915, 0x1209};
 
+/// The USB chip codes the WEB vocabulary ships (web `USB_CHIPS`), in canonical
+/// order. Every one of these MUST resolve — via [canonicalUsbChip] — to an id in
+/// [kUsbDriverIds] (a driver this APK really carries); the drift-guard manifest
+/// `pos/tool/printer-vocabulary.json` is generated from this list.
+const List<String> kUsbChipWebCodes = [
+  'CDC_ACM',
+  'CH340_CH341',
+  'PL2303',
+  'FTDI_FT232R',
+  'FTDI_FT231X',
+  'CP210X',
+  'USB_PRINTER_CLASS',
+  'USB_VENDOR_SPECIFIC',
+];
+
+/// The canonical driver ids this build drives — mirrors `UsbSerialDrivers.all`
+/// in `UsbSerialDrivers.kt`. A configured chip that canonicalises to anything
+/// else is a typed, reported error on the Kotlin side, never a wrong-driver
+/// write.
+const Set<String> kUsbDriverIds = {
+  'CDC_ACM',
+  'CH340',
+  'PL2303',
+  'FTDI',
+  'CP210X',
+  'USB_PRINTER_CLASS',
+  'USB_VENDOR_SPECIFIC',
+};
+
 /// The canonical chip id for a configured `usbChip` value, or null when unset /
 /// `AUTO` (the documented fallback: derive the chip from the attached device).
+///
+/// Accepts both the web vocabulary codes (`CH340_CH341`, `FTDI_FT232R`,
+/// `FTDI_FT231X`, `CP210X`, `USB_PRINTER_CLASS`, `USB_VENDOR_SPECIFIC`) and the
+/// shorter canonical ids the drivers use (`CH340`, `FTDI`, …).
 String? canonicalUsbChip(String? raw) {
   final v = (raw ?? '').trim().toUpperCase().replaceAll(RegExp(r'[-\s]+'), '_');
   switch (v) {
@@ -89,10 +125,13 @@ String? canonicalUsbChip(String? raw) {
     case 'CH340G':
     case 'CH341A':
     case 'CH34X':
+    case 'CH340_CH341':
+    case 'CH340_341':
       return 'CH340';
     case 'PL2303':
     case 'PL2303HX':
     case 'PL2303HXA':
+    case 'PL2303HXD':
     case 'PROLIFIC':
       return 'PL2303';
     case 'FTDI':
@@ -101,7 +140,32 @@ String? canonicalUsbChip(String? raw) {
     case 'FT231':
     case 'FT231X':
     case 'FTDI_FT232R':
+    case 'FTDI_FT231X':
+    case 'FT234X':
       return 'FTDI';
+    case 'CP210X':
+    case 'CP2101':
+    case 'CP2102':
+    case 'CP2102N':
+    case 'CP2103':
+    case 'CP2104':
+    case 'CP2105':
+    case 'CP2108':
+    case 'SILABS':
+    case 'SILICON_LABS':
+    case 'SI_LABS':
+      return 'CP210X';
+    case 'USB_PRINTER_CLASS':
+    case 'PRINTER_CLASS':
+    case 'USB_PRINTER':
+    case 'PRINTER':
+    case 'RAW_USB':
+      return 'USB_PRINTER_CLASS';
+    case 'USB_VENDOR_SPECIFIC':
+    case 'VENDOR_SPECIFIC':
+    case 'USB_VENDOR':
+    case 'VENDOR':
+      return 'USB_VENDOR_SPECIFIC';
     default:
       return v; // an unrecognised value is kept so it can be reported, not guessed
   }

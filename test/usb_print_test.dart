@@ -525,6 +525,241 @@ void main() {
       expect(p.toPrintPrinter().usbChip, isNull);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Widened coverage: CP210x + printers that need no serial bridge at all.
+  // The Kotlin driver tables/init sequences are pure data verified by
+  // inspection; these tests exercise the Dart-side selection, vocabulary and
+  // typed-error plumbing that decides WHICH driver is handed to the channel.
+  // -------------------------------------------------------------------------
+  group('widened USB coverage — vocabulary (web codes → canonical ids)', () {
+    test('canonicalUsbChip accepts the web vocabulary codes', () {
+      expect(canonicalUsbChip('CH340_CH341'), 'CH340');
+      expect(canonicalUsbChip('FTDI_FT232R'), 'FTDI');
+      expect(canonicalUsbChip('FTDI_FT231X'), 'FTDI');
+      expect(canonicalUsbChip('CP210X'), 'CP210X');
+      expect(canonicalUsbChip('cp2102'), 'CP210X');
+      expect(canonicalUsbChip('silabs'), 'CP210X');
+      expect(canonicalUsbChip('USB_PRINTER_CLASS'), 'USB_PRINTER_CLASS');
+      expect(canonicalUsbChip('usb-vendor-specific'), 'USB_VENDOR_SPECIFIC');
+      expect(canonicalUsbChip('printer'), 'USB_PRINTER_CLASS');
+      expect(canonicalUsbChip('bogus'), 'BOGUS'); // kept so it can be reported
+    });
+
+    test('usbChipForVidPid maps the CP210x ids and leaves unknown ids alone', () {
+      expect(usbChipForVidPid(0x10C4, 0xEA60), 'CP210X');
+      expect(usbChipForVidPid(0x10C4, 0xEAB0), 'CP210X');
+      expect(usbChipForVidPid(0x10C4, 0xEA70), 'CP210X');
+      expect(usbChipForVidPid(0x10C4, 0x9999), isNull);
+    });
+
+    test('EVERY chip code the web vocabulary ships maps to a driver that exists', () {
+      // The web list is the contract; each code must canonicalise onto one of the
+      // driver ids the APK really carries (`UsbSerialDrivers.all` in the Kotlin),
+      // so the channel is never handed a driver id that does not exist.
+      expect(kUsbChipWebCodes.toSet(), {
+        'CDC_ACM',
+        'CH340_CH341',
+        'PL2303',
+        'FTDI_FT232R',
+        'FTDI_FT231X',
+        'CP210X',
+        'USB_PRINTER_CLASS',
+        'USB_VENDOR_SPECIFIC',
+      });
+      for (final web in kUsbChipWebCodes) {
+        final canonical = canonicalUsbChip(web);
+        expect(canonical, isNotNull, reason: web);
+        expect(kUsbDriverIds, contains(canonical), reason: '$web → $canonical has no driver');
+        // The canonical id is itself accepted round-trip (configs written by
+        // either version of the web app behave the same).
+        expect(canonicalUsbChip(canonical), canonical, reason: canonical!);
+      }
+      // A value with no driver is kept verbatim so it is reported, never guessed
+      // — the transport then refuses it with a typed error.
+      expect(kUsbDriverIds, isNot(contains(canonicalUsbChip('BOGUS'))));
+    });
+  });
+
+  group('widened USB coverage — transport selects the new chips and reports typed faults', () {
+    Map<String, Object?> cp210x({bool granted = true}) => {
+          'vid': 0x10C4,
+          'pid': 0xEA60,
+          'name': 'CP2102 Printer',
+          'chip': 'CP210X',
+          'granted': granted,
+        };
+
+    Map<String, Object?> printerClass({String chip = 'USB_PRINTER_CLASS', bool granted = true}) => {
+          'vid': 0x0483,
+          'pid': 0x5740,
+          'name': 'USB Printer',
+          'chip': chip,
+          'granted': granted,
+        };
+
+    test('a CP210X device is selected and the open carries CP210X', () async {
+      Map<String, dynamic>? openArgs;
+      var wrote = false;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [cp210x()];
+          case 'open':
+            openArgs = Map<String, dynamic>.from(call.arguments as Map);
+            return _ok('opened');
+          case 'write':
+            wrote = true;
+            return _ok();
+        }
+        return _ok();
+      });
+      await UsbPrintTransport().send(_usbJob(vidPid: '10C4:EA60', chip: 'CP210X'));
+      expect(openArgs!['chip'], 'CP210X');
+      expect(openArgs!['vid'], 0x10C4);
+      expect(openArgs!['pid'], 0xEA60);
+      expect(wrote, isTrue);
+      _mockClear();
+    });
+
+    test('no chip configured → derives USB_PRINTER_CLASS from the device report', () async {
+      Map<String, dynamic>? openArgs;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [printerClass()];
+          case 'open':
+            openArgs = Map<String, dynamic>.from(call.arguments as Map);
+            return _ok('opened');
+        }
+        return _ok();
+      });
+      await UsbPrintTransport().send(_usbJob(vidPid: '0483:5740', chip: null));
+      expect(openArgs!['chip'], 'USB_PRINTER_CLASS');
+      _mockClear();
+    });
+
+    test('no chip configured → derives USB_VENDOR_SPECIFIC from the device report', () async {
+      Map<String, dynamic>? openArgs;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [printerClass(chip: 'USB_VENDOR_SPECIFIC')];
+          case 'open':
+            openArgs = Map<String, dynamic>.from(call.arguments as Map);
+            return _ok('opened');
+        }
+        return _ok();
+      });
+      await UsbPrintTransport().send(_usbJob(vidPid: '0483:5740', chip: null));
+      expect(openArgs!['chip'], 'USB_VENDOR_SPECIFIC');
+      _mockClear();
+    });
+
+    test('a configured class chip against a serial device → UsbChipMismatchException, no write', () async {
+      var wrote = false;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [_ch340()]; // attached is a CH340 serial bridge
+          case 'write':
+            wrote = true;
+            return _ok();
+        }
+        return _ok();
+      });
+      await expectLater(
+        UsbPrintTransport().send(_usbJob(chip: 'USB_VENDOR_SPECIFIC')),
+        throwsA(isA<UsbChipMismatchException>()
+            .having((e) => e.state, 'state', PrinterLinkState.unsupported)
+            .having((e) => e.configuredChip, 'configured', 'USB_VENDOR_SPECIFIC')
+            .having((e) => e.attached, 'attached', 'CH340')),
+      );
+      expect(wrote, isFalse);
+      _mockClear();
+    });
+
+    test('an unknown chip code → typed Unsupported, never a silent write', () async {
+      var wrote = false;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [
+              {'vid': 0x1A86, 'pid': 0x7523, 'name': 'X', 'chip': 'BOGUS', 'granted': true},
+            ];
+          case 'open':
+            return {'state': 'unsupported', 'detail': "Unsupported USB chip 'BOGUS'."};
+          case 'write':
+            wrote = true;
+            return _ok();
+        }
+        return _ok();
+      });
+      await expectLater(
+        UsbPrintTransport().send(_usbJob(chip: 'BOGUS')),
+        throwsA(isA<UsbPrintException>().having((e) => e.state, 'state', PrinterLinkState.unsupported)),
+      );
+      expect(wrote, isFalse);
+      _mockClear();
+    });
+
+    test('a device with no bulk OUT endpoint → Offline, no write', () async {
+      var wrote = false;
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [printerClass()];
+          case 'open':
+            return {'state': 'offline', 'detail': 'No bulk OUT endpoint on the USB printer interface.'};
+          case 'write':
+            wrote = true;
+            return _ok();
+        }
+        return _ok();
+      });
+      await expectLater(
+        UsbPrintTransport().send(_usbJob(vidPid: '0483:5740', chip: 'USB_PRINTER_CLASS')),
+        throwsA(isA<UsbPrintException>().having((e) => e.state, 'state', PrinterLinkState.offline)),
+      );
+      expect(wrote, isFalse);
+      _mockClear();
+    });
+
+    test('a BILL job still routes through PrintQueue to the USB printer resolved from config', () async {
+      final written = <List<int>>[];
+      _mock((call) async {
+        switch (call.method) {
+          case 'status':
+            return _ok();
+          case 'listDevices':
+            return [cp210x()];
+          case 'open':
+            return _ok('opened');
+          case 'write':
+            written.add(call.arguments['bytes'] as List<int>);
+            return _ok();
+        }
+        return _ok();
+      });
+      final queue = PrintQueue(transport: UsbPrintTransport());
+      await queue.submit(_usbJob(vidPid: '10C4:EA60', chip: 'CP210X'));
+      expect(written, hasLength(1));
+      expect(written.single.sublist(0, 2), [0x1B, 0x40]); // ESC @
+      _mockClear();
+    });
+  });
 }
 
 // Minimal money fixtures for the BILL dispatch (no hand-computed totals).

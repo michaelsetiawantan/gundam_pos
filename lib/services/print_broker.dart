@@ -31,6 +31,10 @@ class PrintPrinter {
     this.widthMm = 80,
     this.supportsRasterImage = false,
     this.dialect = kDefaultEscPosDialect,
+    this.codePage,
+    this.supportsCutter,
+    this.supportsNativeQr,
+    this.supportsNativeBarcode,
     this.retryCount = 3,
     this.retryTimeoutSec = 20,
   });
@@ -49,9 +53,20 @@ class PrintPrinter {
   final int widthMm;
   final bool supportsRasterImage;
 
-  /// Effective ESC/POS dialect (canonicalised). Only the default is encoded
-  /// today; an unknown value still prints with the default and is reported.
+  /// Effective ESC/POS dialect (canonicalised). Unknown or declared-but-not-
+  /// implemented dialects still print with the default and are reported.
   final String dialect;
+
+  /// Configured code page (`CP437`, `CP850`, `CP1252`, `KATAKANA`, …). Absent
+  /// (null) → the encoder's documented default CP437.
+  final String? codePage;
+
+  /// Capability overrides from the printer/model config. null → the dialect's
+  /// own default decides.
+  final bool? supportsCutter;
+  final bool? supportsNativeQr;
+  final bool? supportsNativeBarcode;
+
   final int retryCount;
   final int retryTimeoutSec;
 }

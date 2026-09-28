@@ -21,9 +21,23 @@
    Login POS hanya boleh 1 device aktif per user (single-active).
 3. Setelah login: reminder lisensi (kalau GRACE), konfigurasi menu/printer/metode bayar ikut ter-sync.
 
-## Kalau IP server beda
+## Alamat server (VPN / cloud / LAN)
 
-Base URL di-*compile* ke APK (bukan setting runtime di UI). Rebuild dengan IP tablet-reachable:
+**Tidak perlu rebuild APK lagi.** Di layar **Activation** dan **Login** ada field alamat server;
+di halaman **More** bisa dilihat/diubah juga. Prioritas: **isi manual di tablet > default build > default bawaan**.
+
+- Terima `host`, `host:port`, atau URL lengkap `http(s)://...`.
+- Setelah disimpan, app **probe** `GET /api/health` dan bilang jujur: server benar / host salah /
+  tidak terjangkau / gagal TLS (sertifikat).
+- Kalau probe gagal, alamat lama yang sudah jalan **tidak dihapus**.
+- Kalau alamat `http://` ke host non-localhost, app kasih peringatan: cookie sesi `Secure` bisa
+  ditolak client di HTTP. Solusinya: pakai HTTPS, atau jalankan server dengan `COOKIE_SECURE=false`
+  (lihat `docs/runbook.md`).
+
+Kalau IP server beda
+
+Base URL di APK itu hanya **default/fallback** sekarang — di tablet bisa diganti sendiri lewat field
+alamat server. Kalau tetap mau ganti default build, pakai IP tablet-reachable:
 
 ```bash
 cd ~/agent-working/code/gundam/pos
@@ -42,8 +56,11 @@ yang menembus port 3100.
   Settings (sekali saja), lalu izin `BLUETOOTH_CONNECT` (Android 12+) di-grant saat diminta app.
   MAC printer diambil dari config web, jadi tidak perlu discovery. Kalau belum paired, tablet
   menampilkan **Not paired** (pairing tidak bisa diam-diam, Android butuh konfirmasi PIN).
-- **USB** — belum ada di build ini. Butuh kabel OTG + USB Host permission + driver chip serial
-  (CH340/PL2303/FTDI); ini satu-satunya transport yang memang butuh driver.
+- **USB (OTG)** — jalan, driver chip **built-in di APK**: CDC-ACM, CH340/CH341, PL2303 (HX/HXA),
+  FTDI (FT232R/FT231X). Chip dipilih di web (`/app/printers` → printer model / printer → USB chip).
+  Prasyarat: kabel OTG, izin USB diminta sekali saat printer dicolok, dan VID:PID di config harus
+  cocok dengan perangkat yang tercolok (kalau tidak cocok → error typed, bukan cetak ke chip salah).
+  Catatan: sequence init tiap chip belum diverifikasi di hardware nyata, hanya unit test/review.
 - Router print: BILL = level outlet (bisa multi printer), CAPTAIN_ORDER & BEV_LABEL = level item
   (tanpa fallback kategori), captain per batch (A/B/C). Dialect ESC/POS diambil dari printer model
   (`protocol`) yang di-set di web; dialect tak dikenal → default ESC/POS dan dilaporkan.

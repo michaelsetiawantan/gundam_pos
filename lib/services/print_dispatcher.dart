@@ -268,11 +268,12 @@ class PrintDispatcher {
         alerts.add("Printer '${p.name}' uses ${p.transport}, which this build cannot print to — skipped.");
         continue;
       }
-      // Honest reporting: an unrecognised dialect still prints with the default.
-      if (!p.dialectRecognized) {
-        alerts.add(
-          "Printer '${p.name}' reports protocol '${p.protocol}' — unknown; using the default $kDefaultEscPosDialect dialect.",
-        );
+      // Honest reporting: an unknown or declared-but-unimplemented dialect
+      // still prints with the default.
+      if (!p.dialectImplemented) {
+        alerts.add(p.dialectRecognized
+            ? "Printer '${p.name}' reports protocol '${p.protocol}' — '${p.dialect}' is declared but not implemented by this build; using the default $kDefaultEscPosDialect dialect."
+            : "Printer '${p.name}' reports protocol '${p.protocol}' — unknown; using the default $kDefaultEscPosDialect dialect.");
       }
       try {
         final rendered = await broker.printTicket(
