@@ -4,6 +4,7 @@ import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/logic/cart.dart';
+import 'package:gundam_pos/logic/discount_voucher.dart' as dv;
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/receipt.dart';
 import 'package:gundam_pos/models/config_models.dart';
@@ -38,6 +39,10 @@ class PaymentController extends ChangeNotifier {
 
   final List<money.PaymentInput> payments = [];
 
+  /// At most ONE discount OR ONE voucher per bill (mutually exclusive). Empty
+  /// until the cashier picks one; the server re-validates and is authoritative.
+  dv.PricingSelection pricing = dv.PricingSelection.none;
+
   /// Result of the last successful split (pay/change/tips). Null while unpaid.
   money.SplitResult? split;
   Map<String, dynamic>? settled; // server bill
@@ -51,23 +56,66 @@ class PaymentController extends ChangeNotifier {
 
   bool get covered => paid >= payable;
 
-  double get payable {
-    final flow = money.computeMoneyFlow(
-      cart.lines.map((l) {
-        final item = config.itemById(l.itemId);
-        return money.MoneyLine(
+  /// Canonical money-flow preview: subtotal − (discount|voucher) + VAT + SC →
+  /// round ONCE → total. Server recomputes authoritatively at settle.
+  money.MoneyFlow get _flow {
+    final lines = <money.MoneyLine>[
+      for (final l in cart.lines)
+        money.MoneyLine(
           subtotal: l.lineSubtotal,
           vatMode: l.vatMode,
-          vatRate: item?.vatRate,
+          vatRate: config.itemById(l.itemId)?.vatRate,
           scMode: l.scMode,
-          scRate: item?.scRate,
-        );
-      }).toList(),
-      0, // discount (not implemented in MVP cash flow)
-      0, // shipment
-      config.shift.roundingMode,
-    );
-    return money.round2(flow.total);
+          scRate: config.itemById(l.itemId)?.scRate,
+        ),
+    ];
+    final subtotal = lines.fold<double>(0, (s, l) => s + l.subtotal);
+    return money.computeMoneyFlow(lines, pricing.amountFor(subtotal), 0, config.shift.roundingMode);
+  }
+
+  double get payable => money.round2(_flow.total);
+
+  /// Discount/voucher amount applied to the bill (before VAT/SC).
+  double get discountAmount => money.round2(_flow.discountAmount);
+
+  dv.DiscountMaster? get appliedDiscount => pricing.discount;
+  dv.VoucherMaster? get appliedVoucher => pricing.voucher;
+
+  List<String> get _lineCategoryIds => [
+        for (final l in cart.lines)
+          if (config.itemById(l.itemId)?.categoryId case final c?) c,
+      ];
+
+  /// Discounts offered for the current cart (active, unexpired, category-eligible).
+  List<dv.DiscountMaster> get availableDiscounts => dv.eligibleDiscounts(
+        discounts: config.discounts,
+        lineCategoryIds: _lineCategoryIds,
+        parentById: config.categoryParentId,
+      );
+
+  /// Vouchers offered for the current cart (active, unexpired, eligible, in quota).
+  List<dv.VoucherMaster> get availableVouchers => dv.eligibleVouchers(
+        vouchers: config.vouchers,
+        lineCategoryIds: _lineCategoryIds,
+        parentById: config.categoryParentId,
+      );
+
+  /// Apply a discount — replaces any applied voucher (one-per-bill).
+  void applyDiscount(dv.DiscountMaster d) {
+    pricing = pricing.applyDiscount(d);
+    _recompute();
+  }
+
+  /// Apply a voucher — replaces any applied discount (one-per-bill).
+  void applyVoucher(dv.VoucherMaster v) {
+    pricing = pricing.applyVoucher(v);
+    _recompute();
+  }
+
+  /// Cancel the applied discount/voucher (distinct from cancelling the order).
+  void cancelPricing() {
+    pricing = pricing.cleared();
+    _recompute();
   }
 
   double get paid => money.round2(payments.fold<double>(0, (s, p) => s + p.amount));

@@ -6,6 +6,7 @@
 /// provides — menu nodes when present, else a category grouping fallback.
 library;
 
+import 'package:gundam_pos/logic/discount_voucher.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 
 money.RoundingMode _roundingFrom(String? s) {
@@ -320,6 +321,8 @@ class TenantConfig {
     required this.shift,
     required this.tables,
     this.priceLevels = const [],
+    this.discounts = const [],
+    this.vouchers = const [],
   });
 
   factory TenantConfig.fromSyncPayloads(Map<String, dynamic> master, Map<String, dynamic> outlet) {
@@ -350,6 +353,17 @@ class TenantConfig {
             ?.map((e) => PriceLevel.fromJson(e as Map<String, dynamic>))
             .toList() ??
         const <PriceLevel>[];
+    // Discount/voucher masters (tenant MASTER domain). Tolerant: the server
+    // does not yet ship these keys → empty lists. ASSUMED keys: `discounts`
+    // and `vouchers` on the MASTER payload (finding, see task report).
+    final discounts = (master['discounts'] as List?)
+            ?.map((e) => DiscountMaster.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        const <DiscountMaster>[];
+    final vouchers = (master['vouchers'] as List?)
+            ?.map((e) => VoucherMaster.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        const <VoucherMaster>[];
     return TenantConfig(
       items: items,
       categories: cats,
@@ -358,6 +372,8 @@ class TenantConfig {
       shift: shiftOut == null ? ShiftConfig.defaultValue() : ShiftConfig.fromJson(shiftOut),
       tables: tables,
       priceLevels: levels,
+      discounts: discounts,
+      vouchers: vouchers,
     );
   }
 
@@ -370,6 +386,29 @@ class TenantConfig {
   /// Distinct price-level catalog shipped by MASTER (levelIndex + label). Used
   /// to drive size/level selection labels across the outlet.
   final List<PriceLevel> priceLevels;
+  /// Tenant discount masters (server MASTER domain; empty until the server
+  /// ships the `discounts` key).
+  final List<DiscountMaster> discounts;
+  /// Tenant voucher masters (server MASTER domain; empty until the server
+  /// ships the `vouchers` key).
+  final List<VoucherMaster> vouchers;
+
+  /// Flat category-id → parent-id map (walks the nested `children` tree the
+  /// server sends). Used for discount/voucher category eligibility inheritance.
+  Map<String, String?> get categoryParentId {
+    final out = <String, String?>{};
+    void walk(Category c, String? parent) {
+      out[c.id] = c.parentId ?? parent;
+      for (final child in c.children) {
+        walk(child, c.id);
+      }
+    }
+
+    for (final c in categories) {
+      walk(c, null);
+    }
+    return out;
+  }
 
   MenuItem? itemById(String id) {
     for (final i in items) {

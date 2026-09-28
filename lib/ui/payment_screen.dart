@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:gundam_pos/logic/discount_voucher.dart' as dv;
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
@@ -79,7 +80,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
             padding: const EdgeInsets.all(20),
             children: [
               _TotalCard(controller: c),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
+              _PricingPanel(controller: c),
+              const SizedBox(height: 16),
               if (c.payments.isNotEmpty) _PaymentsList(controller: c),
               const SizedBox(height: 16),
               const Text('Payment methods', style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol, fontSize: 15)),
@@ -147,6 +150,11 @@ class _TotalCard extends StatelessWidget {
         const Text('Payable', style: TextStyle(color: PosTheme.tealSoft, fontSize: 13)),
         Text(_fmt(c.payable), style: const TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w800)),
         const SizedBox(height: 12),
+        if (c.discountAmount > 0)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Discount − ${_fmt(c.discountAmount)}', style: const TextStyle(color: PosTheme.tealSoft, fontWeight: FontWeight.w700)),
+          ),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Text('Paid ${_fmt(c.paid)}', style: const TextStyle(color: PosTheme.tealSoft)),
           Text(c.covered ? 'Covered ✓' : 'Remaining ${_fmt(c.remaining)}',
@@ -163,6 +171,83 @@ class _TotalCard extends StatelessWidget {
     );
   }
 
+  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+}
+
+/// Inline discount / voucher panel. Offers the eligible masters for the cart
+/// (category-inherited), enforces one-per-bill, and can cancel the applied one.
+class _PricingPanel extends StatelessWidget {
+  const _PricingPanel({required this.controller});
+  final PaymentController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final dm = c.appliedDiscount;
+    final vm = c.appliedVoucher;
+    final discounts = c.availableDiscounts;
+    final vouchers = c.availableVouchers;
+    if (dm == null && vm == null && discounts.isEmpty && vouchers.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: PosTheme.line),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Discount / Voucher', style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol, fontSize: 15)),
+        const SizedBox(height: 10),
+        if (dm != null || vm != null)
+          Row(children: [
+            Expanded(
+              child: Text(
+                dm != null ? 'Discount: ${dm.name}' : 'Voucher: ${vm!.name}',
+                style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ink),
+              ),
+            ),
+            Text('− ${_fmt(c.discountAmount)}', style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ok)),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Cancel discount/voucher',
+              onPressed: c.cancelPricing,
+              icon: const Icon(Icons.close, color: PosTheme.danger),
+            ),
+          ])
+        else ...[
+          if (discounts.isNotEmpty) ...[
+            const Text('Discounts', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final d in discounts)
+                ActionChip(
+                  label: Text('${d.name} (${_label(d)})'),
+                  onPressed: () => c.applyDiscount(d),
+                ),
+            ]),
+            const SizedBox(height: 10),
+          ],
+          if (vouchers.isNotEmpty) ...[
+            const Text('Vouchers', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final v in vouchers)
+                ActionChip(
+                  label: Text('${v.name} (${_label(v)})'),
+                  onPressed: () => c.applyVoucher(v),
+                ),
+            ]),
+          ],
+        ],
+      ]),
+    );
+  }
+
+  static String _label(dv.PricingMaster m) =>
+      m.kind == dv.PricingKind.percentage ? '${_fmt(m.value)}%' : _fmt(m.value);
   static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
 }
 
