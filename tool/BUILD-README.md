@@ -34,7 +34,24 @@ di halaman **More** bisa dilihat/diubah juga. Prioritas: **isi manual di tablet 
   ditolak client di HTTP. Solusinya: pakai HTTPS, atau jalankan server dengan `COOKIE_SECURE=false`
   (lihat `docs/runbook.md`).
 
-Kalau IP server beda
+## Kalau printer gagal cetak (log diagnosis)
+
+Tablet mencatat **setiap percobaan cetak** ke SQLite lokal sebelum mencetak, lalu mengirimnya ke server
+saat online. Tidak ada lagi kegagalan yang hilang begitu snackbar ditutup.
+
+- **Di tablet**: halaman **More → Print diagnostics** — daftar terbaru, filter (outcome/ticket type/tanggal),
+  hitungan per hasil, dan detail berisi error code, warning encoder (karakter ditransliterasi, QR/barcode/
+  image fallback), dialect + code page beserta status fallback, dan potongan teks struk (hanya untuk
+  FAILED/FALLBACK, maks 4KB). Ada tombol **Retry upload** dan **Copy** satu entri untuk dikirim ke dev.
+- **Di web**: **`/app/print-diagnostics`** — filter outlet/device/ticket type/outcome/error code/tanggal/cari
+  receipt, hitungan per outcome, indikator last-reported (stale >60 menit), detail lengkap + copy.
+- Retensi: tablet 500 baris / 14 hari (baris yang belum terkirim tidak pernah dipangkas); server
+  30 hari / 5000 baris per outlet. Upload idempotent (`clientLogId`) — kirim ulang tidak pernah duplikat.
+
+Kalau ada printer yang tidak nge-print: buka `/app/print-diagnostics`, kirim entri FAILED-nya (error code +
+warning + teks struknya) — itu cukup untuk saya perbaiki tanpa harus menebak.
+
+## Kalau IP server beda
 
 Base URL di APK itu hanya **default/fallback** sekarang — di tablet bisa diganti sendiri lewat field
 alamat server. Kalau tetap mau ganti default build, pakai IP tablet-reachable:
