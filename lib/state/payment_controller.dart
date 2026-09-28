@@ -6,8 +6,12 @@ import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/discount_voucher.dart' as dv;
 import 'package:gundam_pos/logic/money.dart' as money;
+import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/logic/receipt.dart';
+import 'package:gundam_pos/logic/shift_window.dart';
+import 'package:gundam_pos/logic/shipment.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/services/print_dispatcher.dart';
 
 /// Drives payment for an order: canonical payable preview (server recomputes at
 /// settle), split allocation until payable is covered — rounding happens once
@@ -25,6 +29,9 @@ class PaymentController extends ChangeNotifier {
     this.shortcode,
     ReceiptSequencer? receipts,
     this.onSettled,
+    this.printer,
+    this.openedAt,
+    this.shiftGate,
   }) : _receipts = receipts ?? ReceiptSequencer();
 
   final PosApi posApi;
@@ -36,6 +43,27 @@ class PaymentController extends ChangeNotifier {
   final String? deviceAssetId;
   final String? shortcode;
   final ReceiptSequencer _receipts;
+
+  /// When the order was opened (server `openedAt`). Feeds the recap-window
+  /// block on a pre-midnight hanging order. Null → that check is skipped.
+  final DateTime? openedAt;
+
+  /// Shift window gate (AUTOMATIC meal-shift). Null → derived from [config].
+  final ShiftGate? shiftGate;
+
+  ShiftGate get shiftRules => shiftGate ?? ShiftGate(config.shift);
+
+  /// The shift-window reason this payment cannot proceed NOW (else null):
+  /// outside the meal-shift range, or a pre-midnight hanging order caught in
+  /// the recap window. The screen consults this to disable Settle and show the
+  /// reason instead of offering a button that can only fail.
+  String? get paymentBlock => shiftRules.blockPayment(openedAt);
+
+  /// The outlet print path (from the app session). Null → printing is a no-op.
+  final PrintDispatcher? printer;
+
+  /// Honest print warnings from the last settle (never blocks the sale).
+  List<String> printAlerts = const [];
 
   final List<money.PaymentInput> payments = [];
 
@@ -49,6 +77,11 @@ class PaymentController extends ChangeNotifier {
   /// APPROVAL and no discount/voucher is applied yet.
   bool pricingPending = false;
   bool pricingBusy = false;
+
+  /// The shipment line (separate revenue stream, after SC before rounding).
+  /// Null = no shipment line. Set by the cashier BEFORE settle; cancellable
+  /// until settle. Flows into [payable] and the settle body.
+  ShipmentLine? shipment;
 
   /// Result of the last successful split (pay/change/tips). Null while unpaid.
   money.SplitResult? split;
@@ -77,10 +110,53 @@ class PaymentController extends ChangeNotifier {
         ),
     ];
     final subtotal = lines.fold<double>(0, (s, l) => s + l.subtotal);
-    return money.computeMoneyFlow(lines, pricing.amountFor(subtotal), 0, config.shift.roundingMode);
+    return money.computeMoneyFlow(
+      lines,
+      pricing.amountFor(subtotal),
+      shipment?.amount ?? 0,
+      config.shift.roundingMode,
+    );
   }
 
   double get payable => money.round2(_flow.total);
+
+  /// Shipment line amount included in the payable (after SC, before rounding).
+  double get shipmentAmount => money.round2(_flow.shipmentAmount);
+
+  /// Set/replace the shipment from a cashier-typed OPEN amount. Empty or 0
+  /// CLEARS the shipment (no line). Non-numeric or negative is rejected — a
+  /// shipment can never be negative. Returns false (with [error]) when invalid.
+  bool setOpenShipment(Object? raw, {String description = 'Shipment'}) {
+    final v = parseShipmentAmount(raw);
+    if (v == null) {
+      error = 'Shipment amount must be a number of 0 or more.';
+      notifyListeners();
+      return false;
+    }
+    shipment = v > 0 ? ShipmentLine.open(v, description: description) : null;
+    _recompute();
+    return true;
+  }
+
+  /// Choose a MASTER shipment (precise amount). Unavailable while the server
+  /// ships no masters (see [kShipmentMastersUnavailable]).
+  bool setMasterShipment(ShipmentMaster m) {
+    if (config.shipmentMasters.isEmpty) {
+      error = kShipmentMastersUnavailable;
+      notifyListeners();
+      return false;
+    }
+    shipment = ShipmentLine.master(masterId: m.id, masterName: m.name, amount: m.amount);
+    _recompute();
+    return true;
+  }
+
+  /// Cancel the shipment line before settle — payable returns to its pre-shipment
+  /// value (rounding is still applied exactly once, by the money-flow).
+  void cancelShipment() {
+    shipment = null;
+    _recompute();
+  }
 
   /// Discount/voucher amount applied to the bill (before VAT/SC).
   double get discountAmount => money.round2(_flow.discountAmount);
@@ -240,6 +316,14 @@ class PaymentController extends ChangeNotifier {
   /// server (authoritative ledger + payment snapshots + order close).
   Future<bool> settle() async {
     if (!covered) return false;
+    // PRD: outside the meal-shift range no payment may complete; a pre-midnight
+    // hanging order caught in the recap window must be finished after it.
+    final block = shiftRules.blockPayment(openedAt);
+    if (block != null) {
+      error = block;
+      notifyListeners();
+      return false;
+    }
     settling = true;
     error = null;
     notifyListeners();
@@ -253,9 +337,12 @@ class PaymentController extends ChangeNotifier {
         receiptId: id,
         transactedAt: DateTime.now().toUtc().toIso8601String(),
         deviceAssetId: deviceAssetId,
+        shipment: shipment?.toSettleBody(),
       );
       settled = r['bill'] as Map<String, dynamic>?;
       receiptId = (settled?['receiptId'] ?? id) as String;
+      // Print the receipt at the settle moment; never blocks or fails the sale.
+      printAlerts = await _printBill();
       onSettled?.call(settled);
       return settled != null;
     } on PosApiException catch (e) {
@@ -267,6 +354,27 @@ class PaymentController extends ChangeNotifier {
     } finally {
       settling = false;
       notifyListeners();
+    }
+  }
+
+  Future<List<String>> _printBill() async {
+    final d = printer;
+    final s = split;
+    if (d == null || s == null) return const [];
+    final items = [for (final l in cart.lines) PrintItem.fromCartLine(l)];
+    final names = {for (final m in config.paymentMethods) m.id: m.displayName};
+    try {
+      final out = await d.printBill(
+        items: items,
+        receiptId: receiptId ?? '',
+        flow: _flow,
+        split: s,
+        methodNames: names,
+        tableName: tableName,
+      );
+      return out.alerts;
+    } catch (_) {
+      return const ['Print path errored — sale unaffected.'];
     }
   }
 

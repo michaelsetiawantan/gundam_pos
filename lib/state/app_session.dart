@@ -8,11 +8,17 @@ import 'package:gundam_pos/data/config_cache.dart';
 import 'package:gundam_pos/data/local_db.dart';
 import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/data/print_format_store.dart';
+import 'package:gundam_pos/logic/print_payload.dart';
+import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/models/license_info.dart';
 import 'package:gundam_pos/services/print_broker.dart';
+import 'package:gundam_pos/services/print_dispatcher.dart';
+import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
+import 'package:gundam_pos/state/shift_controller.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// App-level session controller: owns device activation, POS login/
@@ -27,17 +33,20 @@ class AppSession extends ChangeNotifier {
     ReceiptSequenceStore? receiptSequence,
     PushStore? pushStore,
     DateTime Function()? now,
+    PrintTransport? printTransport,
   })  : _posApi = posApi,
         _store = sessionStore,
         _receipts = ReceiptSequencer(store: receiptSequence ?? MemoryReceiptSequenceStore()),
         _push = pushStore ?? MemoryPushStore(),
-        _now = now ?? DateTime.now;
+        _now = now ?? DateTime.now,
+        _printTransport = printTransport ?? const NetworkPrintTransport();
 
   final PosApi _posApi;
   final SessionStore _store;
   final ReceiptSequencer _receipts;
   final PushStore _push;
   final DateTime Function() _now;
+  final PrintTransport _printTransport;
 
   PosContext ctx = const PosContext();
   PosStage stage = PosStage.checking;
@@ -45,6 +54,38 @@ class AppSession extends ChangeNotifier {
   Map<String, int> deviceVersions = const {};
   DateTime? lastSyncAt;
   bool syncing = false;
+
+  /// Licence coverage last seen from the server (login + config sync payloads).
+  /// Null until the first login response. Never blocks a session — the hard lock
+  /// is enforced server-side; this only drives the informational reminder.
+  LicenseInfo? license;
+
+  /// Memoised dismissal for the licence reminder. Cleared on login, so a new
+  /// licence state / coverage end / day re-arms it.
+  String? _dismissedLicenseKey;
+
+  /// Reminder identity: a new state, coverage end or calendar day re-arms it.
+  String? get _licenseKey {
+    final l = license;
+    if (l == null) return null;
+    final now = _now();
+    return '${l.state}|${l.validTo?.toIso8601String()}|${now.year}-${now.month}-${now.day}';
+  }
+
+  /// True when the home screen should show the licence reminder (GRACE always;
+  /// ACTIVE only when the shipped dates say it is nearing expiry). Informational
+  /// only — dismissing or ignoring it never affects the session.
+  bool get showLicenseReminder =>
+      license != null &&
+      !license!.isLocked &&
+      license!.needsReminder() &&
+      _dismissedLicenseKey != _licenseKey;
+
+  /// Dismiss the current reminder (memoised for this state/coverage/day).
+  void dismissLicenseReminder() {
+    _dismissedLicenseKey = _licenseKey;
+    notifyListeners();
+  }
 
   /// Outbox for deferred pushes (e.g. offline transactions). The MVP settles
   /// directly against the server; this stays empty but enqueues and drains are
@@ -61,11 +102,63 @@ class AppSession extends ChangeNotifier {
   PrintBroker? _printBroker;
   PrintBroker? get printBroker => _printBroker;
 
+  /// Outlet printer model + routing, parsed from the synced OUTLET payload.
+  PrinterRouting? _printRouting;
+  PrinterRouting? get printRouting => _printRouting;
+
+  /// The live print path: routing + payload builder + the broker queue. Built
+  /// from REAL synced config here, not by a caller.
+  PrintDispatcher? _printDispatcher;
+  PrintDispatcher? get printDispatcher => _printDispatcher;
+
   /// Wire the print path (queue + transport) once the device printer is known.
-  void attachPrintBroker(PrintBroker broker) => _printBroker = broker;
+  void attachPrintBroker(PrintBroker broker) {
+    _printBroker = broker;
+    _ensurePrintPath();
+  }
+
+  /// (Re)build the broker + dispatcher from the current routing + config.
+  void _ensurePrintPath() {
+    final routing = _printRouting;
+    if (routing == null) return;
+    final broker = _printBroker ?? PrintBroker(store: printFormats, queue: PrintQueue(transport: _printTransport));
+    _printBroker = broker;
+    final base = TicketContext(
+      storeName: ctx.outletName ?? '',
+      cashier: ctx.userName ?? '',
+      deviceShortcode: ctx.shortcode ?? '',
+      currencyLabel: config?.shift.currencyLabel ?? '',
+      timezone: config?.shift.timezone ?? '',
+    );
+    final d = _printDispatcher;
+    if (d == null || d.broker != broker) {
+      _printDispatcher = PrintDispatcher(broker: broker, routing: routing, context: base);
+    } else {
+      d.routing = routing;
+      d.context = base;
+    }
+  }
 
   /// Shared, persisted (device-side) receipt sequencer for the settle flow.
   ReceiptSequencer get receipts => _receipts;
+
+  ShiftController? _shiftController;
+
+  /// The app-wide [ShiftController] — ONE instance for the whole app, so the
+  /// running shift's PINNED config ('config change applies next day') covers
+  /// every screen, not just the shift screen. Created lazily on first use.
+  ShiftController get shiftController =>
+      _shiftController ??= ShiftController(
+        posApi: _posApi,
+        tenantId: ctx.tenantId!,
+        deviceAssetId: ctx.deviceId,
+      );
+
+  /// The effective shift gate for [live] config: the running shift's pinned
+  /// rules when a shift is open, else the live synced config. [now] is a test
+  /// seam (defaults to the wall clock).
+  ShiftGate gateFor(TenantConfig live, {DateTime Function()? now}) =>
+      ShiftGate(shiftController.effectiveConfig(live.shift), now: now);
 
   void attachConfigCache(ConfigCache cache) => _configCache = cache;
 
@@ -163,6 +256,9 @@ class AppSession extends ChangeNotifier {
         deviceId: ctx.deviceId!,
       );
       ctx = ctx.withSession(r);
+      // Licence coverage for the post-login reminder. A fresh login re-arms it.
+      license = LicenseInfo.fromJson(r['license']) ?? license;
+      _dismissedLicenseKey = null;
       await _store.save(ctx);
       stage = PosStage.ready;
       notifyListeners();
@@ -226,10 +322,17 @@ class AppSession extends ChangeNotifier {
       final plan = planSync(serverVersions, deviceVersions);
       if (plan.needsFull.isNotEmpty) {
         final sync = await _posApi.configSync(tenantId, deviceVersions);
+        // Refresh the licence block so the reminder can re-arm on renewal or a
+        // state change without a re-login (additive; absent → keep last known).
+        license = LicenseInfo.fromJson(sync['license']) ?? license;
         final full = sync['full'] as Map<String, dynamic>? ?? const {};
         final master = full['MASTER'] as Map<String, dynamic>? ?? const {};
         final outlet = full['OUTLET'] as Map<String, dynamic>? ?? const {};
         config = TenantConfig.fromSyncPayloads(master, outlet);
+        // Outlet printer model + routing (tolerant; never throws). The print
+        // path is rebuilt from this real synced config.
+        _printRouting = PrinterRouting.parse(outlet);
+        _ensurePrintPath();
         // Published print formats ride the FORMAT domain; applied defensively
         // (a bad payload keeps last-known-good and the built-in fallback holds).
         final formatDomain = full['FORMAT'];

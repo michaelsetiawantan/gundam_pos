@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'package:gundam_pos/logic/shift_window.dart';
+import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/ui/more_screen.dart';
@@ -42,6 +44,7 @@ class HomeScreen extends StatelessWidget {
       listenable: session,
       builder: (context, _) {
         final ctx = session.context;
+        final shiftGate = ShiftGate(session.config?.shift ?? ShiftConfig.defaultValue());
         return Scaffold(
           appBar: AppBar(
             title: Text(ctx.outletName ?? 'Gundam POS'),
@@ -65,6 +68,10 @@ class HomeScreen extends StatelessWidget {
             padding: const EdgeInsets.all(20),
             child: ListView(
               children: [
+                if (session.showLicenseReminder) ...[
+                  _LicenseReminder(session: session),
+                  const SizedBox(height: 20),
+                ],
                 _ContextCard(ctx: ctx, lastSync: session.lastSyncAt, config: session.config != null),
                 const SizedBox(height: 20),
                 GridView.count(
@@ -77,7 +84,7 @@ class HomeScreen extends StatelessWidget {
                   children: [
                     HomeTile(icon: Icons.table_restaurant, title: 'Open Tables', subtitle: 'Server-synced hanging orders', onTap: () => _openTables(context)),
                     HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, TodayTransactionsScreen(session: session))),
-                    HomeTile(icon: Icons.payments_outlined, title: 'Start Shift', subtitle: 'Open the cashier shift', onTap: () => _openShift(context)),
+                    HomeTile(icon: Icons.payments_outlined, title: shiftGate.startLabel, subtitle: shiftGate.isAutomatic ? 'Meal-shift cash count' : 'Open the cashier shift', onTap: () => _openShift(context)),
                     HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, MoreScreen(session: session))),
                   ],
                 ),
@@ -186,5 +193,75 @@ class _Fact extends StatelessWidget {
         Text(value, style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600)),
       ]),
     ]);
+  }
+}
+
+/// BIG dismissible licence reminder (PRD §4.6). Informational only: it NEVER
+/// blocks an ACTIVE/GRACE session — the hard lock is enforced server-side at the
+/// grace cutoff, which refuses login (403 license_locked). Red for GRACE, amber
+/// for ACTIVE-nearing-expiry.
+class _LicenseReminder extends StatelessWidget {
+  const _LicenseReminder({required this.session});
+
+  final AppSession session;
+
+  static String _fmt(DateTime? d) {
+    if (d == null) return '—';
+    final l = d.toLocal();
+    String two(int v) => v < 10 ? '0$v' : '$v';
+    return '${l.year}-${two(l.month)}-${two(l.day)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = session.license!;
+    final grace = l.isGrace;
+    final accent = grace ? PosTheme.danger : PosTheme.warn;
+    final title = grace ? 'Licence in grace period' : 'Licence expiring soon';
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        border: Border(left: BorderSide(color: accent, width: 6)),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(grace ? Icons.warning_amber_rounded : Icons.schedule, color: accent, size: 32),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(title, style: TextStyle(color: accent, fontSize: 22, fontWeight: FontWeight.w800)),
+          ),
+          IconButton(
+            tooltip: 'Dismiss',
+            onPressed: session.dismissLicenseReminder,
+            icon: const Icon(Icons.close),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        Text('Official coverage: ${_fmt(l.validFrom)} → ${_fmt(l.validTo)}',
+            style: const TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        if (grace) ...[
+          Text('Grace window: ${_fmt(l.graceStart)} → ${_fmt(l.graceEndsAt)} (${l.graceDays ?? 0} days)',
+              style: const TextStyle(fontSize: 16, color: PosTheme.slate)),
+          const SizedBox(height: 10),
+          const Text('POS sales are BLOCKED once the grace ends. The owner must renew from the web app to keep selling.',
+              style: TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+        ] else ...[
+          const Text('Renew from the web app before the coverage ends to avoid interruption.',
+              style: TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+        ],
+        const SizedBox(height: 12),
+        Align(
+          alignment: Alignment.centerRight,
+          child: OutlinedButton.icon(
+            onPressed: session.dismissLicenseReminder,
+            icon: const Icon(Icons.check),
+            label: const Text('I understand'),
+          ),
+        ),
+      ]),
+    );
   }
 }

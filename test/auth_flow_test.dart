@@ -109,4 +109,74 @@ void main() {
     expect(session.stage, PosStage.login);
     expect(session.context.activated, isTrue, reason: 'activation outlives a session');
   });
+
+  testWidgets('GRACE licence → BIG reminder on home, dismiss hides it (never blocks)', (tester) async {
+    final backend = FakeBackend();
+    backend.licenseBody = {
+      'state': 'GRACE', 'grace': true,
+      'validFrom': '2025-09-01T00:00:00.000Z',
+      'validTo': '2026-09-01T00:00:00.000Z',
+      'graceStart': '2026-09-02T00:00:00.000Z',
+      'graceDays': 7,
+      'graceEndsAt': '2026-09-09T00:00:00.000Z',
+    };
+    final store = InMemorySessionStore();
+    final session = backend.createSession(store: store);
+    await store.save(const PosContext()
+        .withRedeem({'deviceToken': 'dev', 'groupId': 'g1', 'tenantId': 't1', 'shortcode': 'NSTAR-POS1'})
+        .copyWith(deviceId: 'device-1'));
+    await session.init();
+
+    await session.login(email: 'c@x.demo', password: 'Pass1234');
+    expect(session.isReady, isTrue, reason: 'a GRACE licence must NOT block the session');
+    expect(session.showLicenseReminder, isTrue);
+
+    await tester.pumpWidget(_wrap(HomeScreen(session: session)));
+    expect(find.text('Licence in grace period'), findsOneWidget);
+    expect(find.textContaining('Official coverage'), findsOneWidget);
+    expect(find.textContaining('Grace window'), findsOneWidget);
+    expect(find.textContaining('POS sales are BLOCKED'), findsOneWidget);
+    expect(find.textContaining('renew from the web app'), findsOneWidget);
+    expect(session.isReady, isTrue, reason: 'reminder never blocks the session');
+
+    await tester.tap(find.text('I understand'));
+    await tester.pumpAndSettle();
+    expect(session.showLicenseReminder, isFalse);
+    expect(find.text('Licence in grace period'), findsNothing);
+  });
+
+  testWidgets('ACTIVE licence nearing expiry → informational reminder', (tester) async {
+    final backend = FakeBackend();
+    backend.licenseBody = FakeBackend.activeLicense(daysLeft: 5);
+    final store = InMemorySessionStore();
+    final session = backend.createSession(store: store);
+    await store.save(const PosContext()
+        .withRedeem({'deviceToken': 'dev', 'groupId': 'g1', 'tenantId': 't1', 'shortcode': 'NSTAR-POS1'})
+        .copyWith(deviceId: 'device-1'));
+    await session.init();
+
+    await session.login(email: 'c@x.demo', password: 'Pass1234');
+    expect(session.isReady, isTrue);
+    expect(session.showLicenseReminder, isTrue);
+
+    await tester.pumpWidget(_wrap(HomeScreen(session: session)));
+    expect(find.text('Licence expiring soon'), findsOneWidget);
+    expect(find.textContaining('before the coverage ends'), findsOneWidget);
+  });
+
+  testWidgets('ACTIVE licence far from expiry → no reminder', (tester) async {
+    final backend = FakeBackend();
+    final store = InMemorySessionStore();
+    final session = backend.createSession(store: store);
+    await store.save(const PosContext()
+        .withRedeem({'deviceToken': 'dev', 'groupId': 'g1', 'tenantId': 't1', 'shortcode': 'NSTAR-POS1'})
+        .copyWith(deviceId: 'device-1'));
+    await session.init();
+
+    await session.login(email: 'c@x.demo', password: 'Pass1234');
+    expect(session.showLicenseReminder, isFalse);
+
+    await tester.pumpWidget(_wrap(HomeScreen(session: session)));
+    expect(find.textContaining('Licence'), findsNothing);
+  });
 }

@@ -6,6 +6,7 @@ import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/order_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/ui/open_tables_screen.dart';
+import 'package:gundam_pos/ui/order_entry_screen.dart';
 import 'package:gundam_pos/ui/theme.dart';
 
 import 'support/fake_backend.dart';
@@ -64,6 +65,64 @@ void main() {
       expect(tree.map((n) => n.name), containsAll(['Beverages', 'Main Dishes']));
       expect(tree.first.itemIds, contains('item-espresso'));
     });
+
+    test('pay gate: unsent lines block payment, sending unlocks, sent lines untouched', () async {
+      final backend = FakeBackend();
+      final session = await _readySession(backend);
+      final config = _northstar();
+      final c = OrderController(posApi: session.posApi, tenantId: 't1', config: config, deviceAssetId: 'device-1');
+      await c.startOrder(tableId: 'tbl-a1', tableName: 'A1');
+      await c.addItem(config.itemById('item-espresso')!);
+
+      // Fresh line → payment blocked.
+      expect(c.hasUnsentLines, isTrue);
+      expect(c.canPay, isFalse);
+
+      expect(await c.sendCart(), isTrue);
+      expect(c.hasUnsentLines, isFalse);
+      expect(c.canPay, isTrue);
+
+      // A new line after the batch → blocked again; the SENT line is not merged
+      // into nor re-sent (already-sent lines are never reprinted).
+      await c.addItem(config.itemById('item-espresso')!);
+      expect(c.cart.lines, hasLength(2));
+      expect(c.cart.lines.first.sent, isTrue);
+      expect(c.cart.lines.first.qty, 1);
+      expect(c.cart.lines.last.sent, isFalse);
+      expect(c.canPay, isFalse);
+
+      expect(await c.sendCart(), isTrue);
+      expect(c.captainBatchCount, 2, reason: 'second send is a fresh batch, not a reprint');
+      expect(c.cart.lines.every((l) => l.sent), isTrue);
+      expect(c.canPay, isTrue);
+    });
+  });
+
+  testWidgets('order entry disables payment and offers Send cart until lines are sent', (tester) async {
+    final backend = FakeBackend();
+    final session = await _readySession(backend);
+    final config = _northstar();
+    final c = OrderController(posApi: session.posApi, tenantId: 't1', config: config, deviceAssetId: 'device-1');
+    await c.startOrder(tableId: 'tbl-a1', tableName: 'A1');
+    await c.addItem(config.itemById('item-espresso')!);
+
+    await tester.pumpWidget(_wrap(OrderEntryScreen(session: session, controller: c)));
+    await tester.pumpAndSettle();
+
+    OutlinedButton payButton() =>
+        tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Payment'));
+
+    expect(payButton().onPressed, isNull, reason: 'unsent line → payment disabled');
+    expect(find.byKey(const Key('send-gate-reason')), findsOneWidget);
+    expect(find.text('Send cart'), findsOneWidget);
+
+    await tester.tap(find.text('Send cart'));
+    await tester.pumpAndSettle();
+
+    expect(payButton().onPressed, isNotNull, reason: 'all lines sent → payment unlocks');
+    expect(find.byKey(const Key('send-gate-reason')), findsNothing);
+    expect(find.text('Send cart'), findsNothing);
+    expect(c.canPay, isTrue);
   });
 
   testWidgets('open tables → new order → order entry adds item', (tester) async {

@@ -64,6 +64,21 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
     }
   }
 
+  /// Send the whole unsent cart from the action bar (same path as the cart
+  /// sheet) — the obvious way out of the "unsent lines" state.
+  Future<void> _sendCart() async {
+    final ok = await c.sendCart();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(ok
+        ? SnackBar(
+            backgroundColor: c.printAlerts.isEmpty ? PosTheme.ok : PosTheme.petrol,
+            content: Text(c.printAlerts.isEmpty
+                ? 'Sent — batch ${c.lastBatchLabel}. Already-sent lines were not reprinted.'
+                : 'Sent — batch ${c.lastBatchLabel}. ${c.printAlerts.first}'),
+          )
+        : SnackBar(content: Text(c.error ?? 'Send failed')));
+  }
+
   void _openCart() {
     showModalBottomSheet(
       context: context,
@@ -73,6 +88,13 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
   }
 
   void _pay() {
+    // Gate: the PRD forbids paying a cart that was never sent to the kitchen.
+    if (!c.canPay) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Send the cart to the kitchen before payment.'),
+      ));
+      return;
+    }
     final pc = PaymentController(
       posApi: c.posApi,
       tenantId: c.tenantId,
@@ -84,6 +106,11 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
       shortcode: widget.session.shortcode,
       receipts: widget.session.receipts,
       onSettled: widget.session.noteSettled,
+      printer: widget.session.printDispatcher,
+      // The order's server opened time + the session gate → the recap-window
+      // alert (pre-midnight hanging order) can fire on the real UI path.
+      openedAt: c.openedAt,
+      shiftGate: widget.session.gateFor(c.config),
     );
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => PaymentScreen(controller: pc)));
   }
@@ -229,7 +256,21 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
       child: Container(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         color: PosTheme.petrol,
-        child: Row(children: [
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          if (c.hasUnsentLines)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: Row(children: [
+                Icon(Icons.info_outline, size: 16, color: PosTheme.tealSoft),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text('New lines not sent yet — send the cart before payment.',
+                      key: Key('send-gate-reason'),
+                      style: TextStyle(color: PosTheme.tealSoft, fontSize: 13)),
+                ),
+              ]),
+            ),
+          Row(children: [
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
               Text('${c.cart.itemCount} item(s)', style: const TextStyle(color: PosTheme.tealSoft, fontSize: 13)),
@@ -242,21 +283,26 @@ class _OrderEntryScreenState extends State<OrderEntryScreen> {
             label: const Text('Cart'),
           ),
           const SizedBox(width: 8),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: PosTheme.teal, foregroundColor: PosTheme.ink),
-            onPressed: c.busy ? null : _openCart,
-            child: const Text('Review cart'),
-          ),
-          const SizedBox(width: 8),
+          if (c.hasUnsentLines) ...[
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: PosTheme.teal, foregroundColor: PosTheme.ink),
+              onPressed: c.busy ? null : _sendCart,
+              icon: const Icon(Icons.send),
+              label: const Text('Send cart'),
+            ),
+            const SizedBox(width: 8),
+          ],
           OutlinedButton(
             style: OutlinedButton.styleFrom(
               foregroundColor: PosTheme.tealSoft,
               side: const BorderSide(color: PosTheme.teal, width: 1.5),
               minimumSize: const Size(64, 48),
             ),
-            onPressed: c.cart.isEmpty ? null : _pay,
+            // GATE: payment stays disabled until every cart line is sent.
+            onPressed: c.canPay ? _pay : null,
             child: const Text('Payment'),
           ),
+          ]),
         ]),
       ),
     );
@@ -399,12 +445,17 @@ class _CartSheetState extends State<_CartSheet> {
     if (!mounted) return;
     final c = widget.controller;
     if (ok) {
+      final alerts = c.printAlerts;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: PosTheme.ok,
+        backgroundColor: alerts.isEmpty ? PosTheme.ok : PosTheme.petrol,
         content: Row(children: [
-          const Icon(Icons.check_circle, color: Colors.white),
+          Icon(alerts.isEmpty ? Icons.check_circle : Icons.print_disabled, color: Colors.white),
           const SizedBox(width: 10),
-          Expanded(child: Text('Sent — batch ${c.lastBatchLabel}. Lines already sent are not reprinted.')),
+          Expanded(
+            child: Text(alerts.isEmpty
+                ? 'Sent — batch ${c.lastBatchLabel}. Lines already sent are not reprinted.'
+                : 'Sent — batch ${c.lastBatchLabel}. ${alerts.first}'),
+          ),
         ]),
       ));
     } else {

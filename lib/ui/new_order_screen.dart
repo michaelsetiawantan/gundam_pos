@@ -47,6 +47,9 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       tenantId: widget.session.tenantId!,
       config: widget.config,
       deviceAssetId: widget.session.context.deviceId,
+      printer: widget.session.printDispatcher,
+      // The session's gate: pinned shift rules (config change applies next day).
+      shiftGate: widget.session.gateFor(widget.config),
     );
     final ok = await controller.startOrder(
       tableId: id,

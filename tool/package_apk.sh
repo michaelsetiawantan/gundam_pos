@@ -29,8 +29,15 @@ cp "$APK" "$STAGE/gundam-pos-release.apk"
 cp tool/BUILD-README.md "$STAGE/BUILD-README.md"
 cp tool/README-icons.md "$STAGE/README-icons.md"
 
-( cd "$STAGE" && zip -q -r "$OUT_ZIP" . )
+( cd "$STAGE" && python3 - "$OUT_ZIP" <<'PY'
+import os, sys, zipfile
+out = sys.argv[1]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for name in sorted(os.listdir(".")):
+        z.write(name, name)
+PY
+)
 rm -rf "$STAGE"
 
 echo "== packaged: $OUT_ZIP"
-unzip -l "$OUT_ZIP"
+python3 -c "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);[print(f'{i.file_size:>10}  {i.filename}') for i in z.infolist()]" "$OUT_ZIP"

@@ -265,6 +265,124 @@ class OutletPaymentMethod {
   final String? buttonColor;
 }
 
+String _hhmm(int h, int m) => '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
+
+/// One meal-shift range (AUTOMATIC shift type). Mirrors the server
+/// `MealShiftWindow` row shape (`web/app/api/shift-config/windows/route.ts`
+/// SELECT: id, tenantId, name, startHour, endHour, startMinute, endMinute,
+/// enabled). Tolerant: a missing key → defaults, never throws.
+///
+/// NOTE: `web/lib/config/resync.ts` (buildFull OUTLET) does NOT currently ship
+/// these rows, so on a real tablet this list stays empty and the AUTOMATIC
+/// window reads "not configured" — we never guess a range.
+class MealShiftWindow {
+  MealShiftWindow({
+    required this.name,
+    required this.startHour,
+    required this.startMinute,
+    required this.endHour,
+    required this.endMinute,
+    this.enabled = true,
+  });
+
+  factory MealShiftWindow.fromJson(Map<String, dynamic> j) => MealShiftWindow(
+        name: j['name'] as String? ?? '',
+        startHour: (j['startHour'] as num?)?.toInt() ?? 0,
+        startMinute: (j['startMinute'] as num?)?.toInt() ?? 0,
+        endHour: (j['endHour'] as num?)?.toInt() ?? 0,
+        endMinute: (j['endMinute'] as num?)?.toInt() ?? 0,
+        enabled: (j['enabled'] as bool?) ?? true,
+      );
+
+  final String name;
+  final int startHour;
+  final int startMinute;
+  final int endHour;
+  final int endMinute;
+  final bool enabled;
+
+  int get _startMin => startHour * 60 + startMinute;
+  int get _endMin => endHour * 60 + endMinute;
+
+  /// True when [t] is inside [start, end). Handles ranges that wrap midnight
+  /// (e.g. 22:00–02:00).
+  bool contains(DateTime t) {
+    if (!enabled) return false;
+    final n = t.hour * 60 + t.minute;
+    if (_startMin <= _endMin) return n >= _startMin && n < _endMin;
+    return n >= _startMin || n < _endMin;
+  }
+
+  String get label {
+    final range = '${_hhmm(startHour, startMinute)}–${_hhmm(endHour, endMinute)}';
+    return name.isEmpty ? range : '$name $range';
+  }
+}
+
+/// Daily-close recap window (per group-tenant; 2–15 min). Mirrors the server
+/// `RecapWindow` row shape (`web/app/api/shift-config/recap/route.ts` SELECT:
+/// id, tenantId, startHour, startMinute, durationMin). NOT shipped by
+/// resync.ts today → parses null.
+class RecapWindow {
+  RecapWindow({required this.startHour, required this.startMinute, required this.durationMin});
+
+  factory RecapWindow.fromJson(Map<String, dynamic> j) => RecapWindow(
+        startHour: (j['startHour'] as num?)?.toInt() ?? 0,
+        startMinute: (j['startMinute'] as num?)?.toInt() ?? 0,
+        durationMin: (j['durationMin'] as num?)?.toInt() ?? 0,
+      );
+
+  final int startHour;
+  final int startMinute;
+  final int durationMin;
+
+  int get _startMin => startHour * 60 + startMinute;
+  int get _endMin => _startMin + durationMin;
+
+  /// True when [t] is inside [start, start+durationMin); wraps past midnight.
+  bool contains(DateTime t) {
+    final n = t.hour * 60 + t.minute;
+    if (_endMin <= 1440) return n >= _startMin && n < _endMin;
+    return n >= _startMin || n < (_endMin - 1440);
+  }
+
+  String get label => '${_hhmm(startHour, startMinute)}–${_hhmm((_endMin ~/ 60) % 24, _endMin % 60)}';
+}
+
+/// Why the master-shipment option is not offered: `web/lib/config/resync.ts`
+/// (buildFull MASTER) ships categories/items/menuLayouts/paymentMasters/
+/// priceLevels/discounts/vouchers — it does NOT ship `shipmentMasters`, so the
+/// tablet can never pick one today and only the OPEN shipment path works.
+const String kShipmentMastersUnavailable =
+    'Shipment masters are not shipped in the outlet config — use an open shipment amount.';
+
+/// Master shipment (precise amount, like an item). Mirrors Prisma
+/// `ShipmentMaster`. NOT shipped by resync.ts today → [TenantConfig.shipmentMasters]
+/// stays empty on a real device.
+class ShipmentMaster {
+  ShipmentMaster({
+    required this.id,
+    required this.name,
+    required this.amount,
+    this.description,
+    this.active = true,
+  });
+
+  factory ShipmentMaster.fromJson(Map<String, dynamic> j) => ShipmentMaster(
+        id: j['id'] as String,
+        name: j['name'] as String? ?? '',
+        amount: _numOr(j['amount'], 0),
+        description: j['description'] as String?,
+        active: (j['active'] as bool?) ?? true,
+      );
+
+  final String id;
+  final String name;
+  final double amount;
+  final String? description;
+  final bool active;
+}
+
 class ShiftConfig {
   ShiftConfig({
     required this.shiftType,
@@ -272,6 +390,8 @@ class ShiftConfig {
     required this.roundingMode,
     this.timezone,
     this.currencyLabel = '',
+    this.mealShiftWindows = const [],
+    this.recapWindow,
   });
 
   factory ShiftConfig.defaultValue() => ShiftConfig(
@@ -286,6 +406,13 @@ class ShiftConfig {
         roundingMode: _roundingFrom(j['roundingMode'] as String?),
         timezone: j['timezone'] as String?,
         currencyLabel: j['currencyLabel'] as String? ?? '',
+        mealShiftWindows: (j['mealShiftWindows'] as List?)
+                ?.map((e) => MealShiftWindow.fromJson(e as Map<String, dynamic>))
+                .toList() ??
+            const [],
+        recapWindow: j['recapWindow'] == null
+            ? null
+            : RecapWindow.fromJson(j['recapWindow'] as Map<String, dynamic>),
       );
 
   final String shiftType;
@@ -293,6 +420,23 @@ class ShiftConfig {
   final money.RoundingMode roundingMode;
   final String? timezone;
   final String currencyLabel;
+
+  /// Meal-shift ranges (AUTOMATIC only). Empty on a real device today — the
+  /// server does not ship them (see [MealShiftWindow]).
+  final List<MealShiftWindow> mealShiftWindows;
+
+  /// Daily-close recap window. Null on a real device today.
+  final RecapWindow? recapWindow;
+
+  bool get isAutomatic => shiftType.toUpperCase() == 'AUTOMATIC';
+
+  /// True when two configs describe the same shift RULES (type + windows).
+  /// Drives the "config change applies next day" rule: a running shift keeps
+  /// the config it started with.
+  bool sameRules(ShiftConfig other) =>
+      isAutomatic == other.isAutomatic &&
+      mealShiftWindows.length == other.mealShiftWindows.length &&
+      recapWindow?.label == other.recapWindow?.label;
 }
 
 class TableInfo {
@@ -323,6 +467,7 @@ class TenantConfig {
     this.priceLevels = const [],
     this.discounts = const [],
     this.vouchers = const [],
+    this.shipmentMasters = const [],
   });
 
   factory TenantConfig.fromSyncPayloads(Map<String, dynamic> master, Map<String, dynamic> outlet) {
@@ -364,6 +509,13 @@ class TenantConfig {
             ?.map((e) => VoucherMaster.fromJson(e as Map<String, dynamic>))
             .toList() ??
         const <VoucherMaster>[];
+    // Shipment masters (tenant MASTER domain). Not shipped by resync.ts today →
+    // empty, and the master-shipment option stays unavailable (open shipment only).
+    final shipments = (master['shipmentMasters'] as List?)
+            ?.map((e) => ShipmentMaster.fromJson(e as Map<String, dynamic>))
+            .where((s) => s.active)
+            .toList() ??
+        const <ShipmentMaster>[];
     return TenantConfig(
       items: items,
       categories: cats,
@@ -374,6 +526,7 @@ class TenantConfig {
       priceLevels: levels,
       discounts: discounts,
       vouchers: vouchers,
+      shipmentMasters: shipments,
     );
   }
 
@@ -392,6 +545,9 @@ class TenantConfig {
   /// Tenant voucher masters (server MASTER domain; empty until the server
   /// ships the `vouchers` key).
   final List<VoucherMaster> vouchers;
+  /// Tenant shipment masters (precise amount). NOT shipped by resync.ts today →
+  /// empty on a real device; the master-shipment option stays unavailable.
+  final List<ShipmentMaster> shipmentMasters;
 
   /// Flat category-id → parent-id map (walks the nested `children` tree the
   /// server sends). Used for discount/voucher category eligibility inheritance.

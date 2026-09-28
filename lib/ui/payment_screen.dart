@@ -57,6 +57,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
       return;
     }
     // Success → receipt; close the order stack back to Open Tables.
+    if (c.printAlerts.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.printAlerts.first)));
+    }
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => PaymentSuccessScreen(
         receiptId: c.receiptId ?? '',
@@ -71,6 +74,9 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The gate's verdict on THIS payment, consulted up front so the button and
+    // the settle behaviour agree (a blocked settle can never be pressed).
+    final block = c.paymentBlock;
     return Scaffold(
       appBar: AppBar(title: Text('Payment — ${c.tableName ?? 'order'}')),
       body: SafeArea(
@@ -79,9 +85,15 @@ class _PaymentScreenState extends State<PaymentScreen> {
           builder: (_, __) => ListView(
             padding: const EdgeInsets.all(20),
             children: [
+              if (block != null) ...[
+                ErrorBanner(message: block, key: const Key('payment-gate-reason')),
+                const SizedBox(height: 16),
+              ],
               _TotalCard(controller: c),
               const SizedBox(height: 16),
               _PricingPanel(controller: c),
+              const SizedBox(height: 16),
+              _ShipmentPanel(controller: c),
               const SizedBox(height: 16),
               if (c.payments.isNotEmpty) _PaymentsList(controller: c),
               const SizedBox(height: 16),
@@ -109,7 +121,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
           ),
         ),
       ),
-      bottomNavigationBar: c.covered
+      bottomNavigationBar: c.covered && block == null
           ? SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(16),
@@ -154,6 +166,12 @@ class _TotalCard extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Text('Discount − ${_fmt(c.discountAmount)}', style: const TextStyle(color: PosTheme.tealSoft, fontWeight: FontWeight.w700)),
+          ),
+        if (c.shipmentAmount > 0)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Shipment + ${_fmt(c.shipmentAmount)}${c.shipment?.isMaster == true ? ' (${c.shipment!.description})' : ''}',
+                style: const TextStyle(color: PosTheme.tealSoft, fontWeight: FontWeight.w700)),
           ),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           Text('Paid ${_fmt(c.paid)}', style: const TextStyle(color: PosTheme.tealSoft)),
@@ -272,6 +290,124 @@ class _PricingPanel extends StatelessWidget {
   static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
 }
 
+/// Shipment step — a SEPARATE revenue line (outside discount/voucher, VAT, SC;
+/// added after SC and before rounding). The cashier types an OPEN amount (0 or
+/// empty = no line; non-numeric/negative rejected) and, when the server has
+/// actually shipped masters in config, may pick one (precise amount). Settable
+/// before payment; cancellable until settle.
+class _ShipmentPanel extends StatefulWidget {
+  const _ShipmentPanel({required this.controller});
+  final PaymentController controller;
+
+  @override
+  State<_ShipmentPanel> createState() => _ShipmentPanelState();
+}
+
+class _ShipmentPanelState extends State<_ShipmentPanel> {
+  final _amount = TextEditingController();
+  PaymentController get c => widget.controller;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  void _addOpen() {
+    final ok = c.setOpenShipment(_amount.text);
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(c.error ?? 'Invalid shipment amount.')),
+      );
+      return;
+    }
+    setState(_amount.clear);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ship = c.shipment;
+    final masters = c.config.shipmentMasters;
+    final currency = c.config.shift.currencyLabel;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: PosTheme.line),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('Shipment', style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol, fontSize: 15)),
+        const SizedBox(height: 10),
+        if (ship != null)
+          Row(children: [
+            Expanded(
+              child: Text(
+                ship.isMaster ? 'Master: ${ship.masterName}' : 'Open shipment',
+                style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ink),
+              ),
+            ),
+            Text('+ ${_fmt(ship.amount)}', style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ok)),
+            const SizedBox(width: 8),
+            IconButton(
+              tooltip: 'Cancel shipment',
+              onPressed: c.cancelShipment,
+              icon: const Icon(Icons.close, color: PosTheme.danger),
+            ),
+          ])
+        else ...[
+          Row(children: [
+            Expanded(
+              child: TextField(
+                key: const Key('shipment-amount'),
+                controller: _amount,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: '0',
+                  prefixText: currency.isEmpty ? null : '$currency ',
+                  labelText: 'Open shipment amount',
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: PosTheme.teal, foregroundColor: PosTheme.ink),
+              onPressed: _addOpen,
+              child: const Text('Add'),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          const Text('Amounts of 0 (or empty) mean no shipment line.',
+              style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+          const SizedBox(height: 10),
+          if (masters.isEmpty)
+            const Row(children: [
+              Icon(Icons.block, size: 16, color: PosTheme.slate),
+              SizedBox(width: 6),
+              Expanded(
+                child: Text(kShipmentMastersUnavailable,
+                    key: Key('shipment-master-unavailable'),
+                    style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+              ),
+            ])
+          else
+            Wrap(spacing: 8, runSpacing: 8, children: [
+              for (final m in masters)
+                ActionChip(
+                  label: Text('${m.name} (${_fmt(m.amount)})'),
+                  onPressed: () => c.setMasterShipment(m),
+                ),
+            ]),
+        ],
+      ]),
+    );
+  }
+
+  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+}
+
 class _PaymentsList extends StatelessWidget {
   const _PaymentsList({required this.controller});
   final PaymentController controller;
@@ -336,6 +472,7 @@ class _AmountSheetState extends State<_AmountSheet> {
             Text('${widget.method.displayName} amount', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             const SizedBox(height: 16),
             TextField(
+              key: const Key('payment-amount'),
               controller: _amount,
               autofocus: true,
               keyboardType: TextInputType.number,

@@ -29,6 +29,7 @@ class PrintItem {
     required this.name,
     required this.qty,
     required this.unitPrice,
+    this.itemId = '',
     this.lineTotal,
     this.modifiers = const [],
     this.priceLevelIndex = 0,
@@ -40,6 +41,7 @@ class PrintItem {
   factory PrintItem.fromCartLine(CartLine l, {int batchIndex = 0, String priceLevelLabel = ''}) =>
       PrintItem(
         name: l.name,
+        itemId: l.itemId,
         qty: l.qty,
         unitPrice: l.unitPrice,
         lineTotal: l.lineSubtotal,
@@ -50,6 +52,10 @@ class PrintItem {
       );
 
   final String name;
+
+  /// Catalog id of the sold item — the strict key the print router uses for
+  /// item-level captain/bev routing (never the category).
+  final String itemId;
   final int qty;
   final double unitPrice;
   final double? lineTotal;
@@ -118,6 +124,54 @@ class TicketContext {
   final String qrContent;
   final String thankYouMessage;
   final DateTime at;
+
+  /// Focused overrides for per-ticket context (table/batch/reprint labels).
+  TicketContext copyWith({
+    String? storeName,
+    String? storeShortcode,
+    String? storeAddress,
+    String? cashier,
+    String? tableName,
+    String? guestName,
+    String? ticketType,
+    String? printerName,
+    int? printerWidthMm,
+    String? currencyLabel,
+    String? timezone,
+    String? deviceShortcode,
+    String? batchLabel,
+    String? copyLabel,
+    String? reprintLabel,
+    String? canceledLabel,
+    String? cancelReason,
+    String? actionType,
+    String? qrContent,
+    String? thankYouMessage,
+    DateTime? at,
+  }) =>
+      TicketContext(
+        storeName: storeName ?? this.storeName,
+        storeShortcode: storeShortcode ?? this.storeShortcode,
+        storeAddress: storeAddress ?? this.storeAddress,
+        cashier: cashier ?? this.cashier,
+        tableName: tableName ?? this.tableName,
+        guestName: guestName ?? this.guestName,
+        ticketType: ticketType ?? this.ticketType,
+        printerName: printerName ?? this.printerName,
+        printerWidthMm: printerWidthMm ?? this.printerWidthMm,
+        currencyLabel: currencyLabel ?? this.currencyLabel,
+        timezone: timezone ?? this.timezone,
+        deviceShortcode: deviceShortcode ?? this.deviceShortcode,
+        batchLabel: batchLabel ?? this.batchLabel,
+        copyLabel: copyLabel ?? this.copyLabel,
+        reprintLabel: reprintLabel ?? this.reprintLabel,
+        canceledLabel: canceledLabel ?? this.canceledLabel,
+        cancelReason: cancelReason ?? this.cancelReason,
+        actionType: actionType ?? this.actionType,
+        qrContent: qrContent ?? this.qrContent,
+        thankYouMessage: thankYouMessage ?? this.thankYouMessage,
+        at: at ?? this.at,
+      );
 
   Map<String, Object?> tokens() => {
         'store_name': storeName,

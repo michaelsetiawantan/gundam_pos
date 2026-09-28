@@ -17,6 +17,10 @@ class FakeBackend {
   (String, int)? loginError; // e.g. ('session_active_other_device', 409)
   Map<String, dynamic>? loginBody;
 
+  /// Overridable `license` block sent by both pos-login and config/sync — lets a
+  /// test drive the GRACE / nearing-expiry reminder. Default = ACTIVE, far out.
+  Map<String, dynamic>? licenseBody;
+
   /// Pricing route controls (POST /api/pos/orders/[id]/pricing):
   /// [pricingPending] → below-threshold `{approval:{...}}`; [pricingError] →
   /// `{error:code}`; otherwise the applied `{order:{discountId,voucherId}}`.
@@ -26,7 +30,14 @@ class FakeBackend {
   /// Last settle request body, so tests can assert what the tablet sent.
   Map<String, dynamic>? lastSettleBody;
 
+  /// `openedAt` the fake order-create route returns. Defaults to now; set it to
+  /// simulate a pre-midnight hanging order.
+  DateTime? openOrderOpenedAt;
+
   final _serverVersions = <String, int>{};
+
+  /// Increments per send-cart so tests can tell a fresh batch from a reprint.
+  int _sendBatchSeq = 0;
 
   void setVersions(Map<String, int> v) => _serverVersions
     ..clear()
@@ -91,6 +102,33 @@ class FakeBackend {
         ],
       };
 
+  /// Client-shaped printer model the OUTLET payload ships (transport +
+  /// addressing + routing + strict item-level itemRoutes).
+  static Map<String, dynamic> northstarPrintModel() => {
+        'printers': [
+          {'id': 'pr-front', 'name': 'Front Receipt', 'type': 'RECEIPT', 'transport': 'NETWORK', 'ip': '10.0.0.9', 'port': 9100, 'widthMm': 80, 'supportsRasterImage': false, 'shared': true, 'active': true, 'retryCount': 3, 'retryTimeoutSec': 20},
+          {'id': 'pr-captain', 'name': 'Captain Station', 'type': 'KITCHEN', 'transport': 'NETWORK', 'ip': '10.0.0.10', 'port': 9100, 'widthMm': 80, 'shared': true, 'active': true},
+          {'id': 'pr-bev', 'name': 'Bar Label', 'type': 'LABEL', 'transport': 'NETWORK', 'ip': '10.0.0.11', 'port': 9100, 'widthMm': 58, 'active': true},
+          {'id': 'pr-bt', 'name': 'BT Label', 'type': 'LABEL', 'transport': 'BLUETOOTH', 'bluetoothMac': 'AA:BB:CC', 'widthMm': 58, 'active': true},
+        ],
+        'routing': {
+          'BILL': [
+            {'printerId': 'pr-front', 'batchStep': null},
+          ],
+          'CAPTAIN_ORDER': [
+            {'printerId': 'pr-captain', 'batchStep': 0},
+            {'printerId': 'pr-captain', 'batchStep': 1},
+          ],
+          'BEV_LABEL': [
+            {'printerId': 'pr-bev', 'batchStep': null},
+          ],
+        },
+        'itemRoutes': [
+          {'itemId': 'item-espresso', 'captainPrinterId': 'pr-captain', 'bevPrinterId': 'pr-bev'},
+          {'itemId': 'item-nasi', 'captainPrinterId': 'pr-captain', 'bevPrinterId': null},
+        ],
+      };
+
   static Map<String, dynamic> northstarOutlet() => {
         'paymentMethods': [
           {'id': 'pm-cash', 'masterId': 'm-cash', 'displayName': 'Cash', 'enabled': true, 'sortOrder': 0, 'master': {'id': 'm-cash', 'code': 'CASH', 'type': 'CASH'}},
@@ -102,10 +140,28 @@ class FakeBackend {
           {'id': 'tbl-a2', 'name': 'A2', 'enabled': true, 'capacity': 6},
         ],
         'printRoutings': [],
+        ...northstarPrintModel(),
       };
 
   http.Response _json(int status, Object body) =>
       http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+  /// Faithful ACTIVE licence coverage (server adds from/to + grace window).
+  static Map<String, dynamic> activeLicense({int daysLeft = 365}) {
+    final now = DateTime.now();
+    final to = now.add(Duration(days: daysLeft));
+    return {
+      'state': 'ACTIVE',
+      'grace': false,
+      'validFrom': now.subtract(const Duration(days: 30)).toUtc().toIso8601String(),
+      'validTo': to.toUtc().toIso8601String(),
+      'graceStart': to.add(const Duration(days: 1)).toUtc().toIso8601String(),
+      'graceDays': 0,
+      'graceEndsAt': to.toUtc().toIso8601String(),
+    };
+  }
+
+  Map<String, dynamic> get _license => licenseBody ?? activeLicense();
 
   AppSession createSession({SessionStore? store}) {
     final client = ApiClient(
@@ -138,7 +194,7 @@ class FakeBackend {
               'tenantId': 't1',
               'outlet': {'id': 't1', 'name': 'Northstar'},
               'user': {'id': 'u1', 'email': 'c@x.demo', 'fullName': 'Cashier One'},
-              'license': {'state': 'ACTIVE', 'grace': false},
+              'license': _license,
             });
       case '/api/auth/logout':
         return _json(200, {'ok': true});
@@ -156,6 +212,7 @@ class FakeBackend {
           'needsFull': ['MASTER', 'OUTLET'],
           'upToDate': ['FORMAT', 'MEDIA'],
           'full': {'MASTER': northstarMaster(), 'OUTLET': northstarOutlet()},
+          'license': _license,
         });
       case '/api/pos/shifts':
         if (req.method == 'POST') {
@@ -182,7 +239,7 @@ class FakeBackend {
               'status': 'OPEN',
               'tableName': body['tableName'],
               'openedById': 'u1',
-              'openedAt': DateTime.now().toIso8601String(),
+              'openedAt': (openOrderOpenedAt ?? DateTime.now()).toIso8601String(),
               'lines': <Map<String, dynamic>>[],
             },
           });
@@ -216,8 +273,9 @@ class FakeBackend {
           });
         }
         if (req.method == 'POST' && path.endsWith('/send-cart')) {
+          final seq = _sendBatchSeq++;
           return _json(200, {
-            'batch': {'id': 'b1', 'label': 'A', 'sequence': 0},
+            'batch': {'id': 'b${seq + 1}', 'label': String.fromCharCode(65 + seq), 'sequence': seq},
             'sent': <Map<String, dynamic>>[],
             'printJobs': <Map<String, dynamic>>[],
           });

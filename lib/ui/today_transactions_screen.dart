@@ -40,9 +40,30 @@ class TodayTransactionsScreen extends StatelessWidget {
     }
   }
 
-  void _reprint(BuildContext context, Map<String, dynamic> bill) {
-    // Print broker render is deferred (F4); queue the job locally.
-    _toast(context, 'Reprint queued for ${bill['receiptId']} — print is delivered via the print broker.');
+  Future<void> _reprint(BuildContext context, Map<String, dynamic> bill) async {
+    final d = session.printDispatcher;
+    final receiptId = bill['receiptId']?.toString();
+    if (d == null || receiptId == null) {
+      _toast(context, 'Reprint queued for ${bill['receiptId']} — print is delivered via the print broker.');
+      return;
+    }
+    final out = await d.reprintBill(receiptId);
+    if (context.mounted) {
+      _toast(context, out.alerts.isNotEmpty ? out.alerts.first : 'Reprinted $receiptId.');
+    }
+  }
+
+  Future<void> _reprintCaptain(BuildContext context, Map<String, dynamic> bill) async {
+    final d = session.printDispatcher;
+    final receiptId = bill['receiptId']?.toString();
+    if (d == null || receiptId == null) {
+      _toast(context, 'Captain reprint needs a same-day print record.');
+      return;
+    }
+    final out = await d.reprintCaptain(receiptId);
+    if (context.mounted) {
+      _toast(context, out.alerts.isNotEmpty ? out.alerts.first : 'Captain order reprinted — no bev labels.');
+    }
   }
 
   bool _sameDay(DateTime t) {
@@ -106,10 +127,12 @@ class TodayTransactionsScreen extends StatelessWidget {
                       PopupMenuButton<String>(
                         onSelected: (v) {
                           if (v == 'reprint') _reprint(context, b);
+                          if (v == 'captain') _reprintCaptain(context, b);
                           if (v == 'void') _void(context, b);
                         },
                         itemBuilder: (_) => const [
                           PopupMenuItem(value: 'reprint', child: Text('Reprint')),
+                          PopupMenuItem(value: 'captain', child: Text('Reprint captain order')),
                           PopupMenuItem(value: 'void', child: Text('Void (same-day)')),
                         ],
                       ),

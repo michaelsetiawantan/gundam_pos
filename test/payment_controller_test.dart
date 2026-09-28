@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/receipt.dart';
@@ -11,10 +10,7 @@ import 'support/fake_backend.dart';
 TenantConfig _northstar() =>
     TenantConfig.fromSyncPayloads(FakeBackend.northstarMaster(), FakeBackend.northstarOutlet());
 
-PosApi _backendPos() {
-  final backend = FakeBackend();
-  return backend.createSession().posApi;
-}
+FakeBackend _backend() => FakeBackend();
 
 Cart _singleEspresso() {
   final cart = Cart();
@@ -40,8 +36,8 @@ void main() {
     OutletPaymentMethod cashMethod(TenantConfig cfg) => cfg.paymentMethods.firstWhere((m) => m.type == money.PayType.cash);
     OutletPaymentMethod cardMethod(TenantConfig cfg) => cfg.paymentMethods.firstWhere((m) => m.type == money.PayType.nonCash);
 
-    PaymentController makeCtrl(Cart cart) => PaymentController(
-          posApi: _backendPos(),
+    PaymentController makeCtrl(Cart cart, {FakeBackend? backend}) => PaymentController(
+          posApi: (backend ?? _backend()).createSession().posApi,
           tenantId: 't1',
           config: config,
           orderId: 'order-1',
@@ -112,6 +108,117 @@ void main() {
       expect(isValidReceiptId(c.receiptId!), isTrue);
       expect(c.settled, isNotNull);
       expect(c.error, isNull);
+    });
+  });
+
+  group('PaymentController shipment step', () {
+    late TenantConfig config;
+    setUp(() => config = _northstar());
+
+    OutletPaymentMethod cashMethod(TenantConfig cfg) =>
+        cfg.paymentMethods.firstWhere((m) => m.type == money.PayType.cash);
+
+    PaymentController makeCtrl(Cart cart, {FakeBackend? backend, TenantConfig? cfg}) => PaymentController(
+          posApi: (backend ?? _backend()).createSession().posApi,
+          tenantId: 't1',
+          config: cfg ?? config,
+          orderId: 'order-1',
+          tableName: 'A1',
+          cart: cart,
+          deviceAssetId: 'device-1',
+          shortcode: 'NSTAR-POS1',
+        );
+
+    test('open shipment joins the payable AFTER SC and rounds exactly once', () {
+      final c = makeCtrl(_singleEspresso());
+      expect(c.payable, 28000); // 25000 + 11% VAT = 27750 → UP → 28000
+      expect(c.setOpenShipment('5000'), isTrue);
+      expect(c.shipmentAmount, 5000);
+      // 25000 + 2750 VAT + 5000 shipment = 32750 → UP → 33000 (rounded once)
+      expect(c.payable, 33000);
+      expect(c.shipment!.isMaster, isFalse);
+    });
+
+    test('open shipment validation: rejects non-numeric and negative, 0 = no line', () {
+      final c = makeCtrl(_singleEspresso());
+      expect(c.setOpenShipment('abc'), isFalse);
+      expect(c.error, 'Shipment amount must be a number of 0 or more.');
+      expect(c.shipment, isNull);
+      expect(c.setOpenShipment('-5'), isFalse);
+      expect(c.shipment, isNull);
+      expect(c.setOpenShipment(''), isTrue);
+      expect(c.shipment, isNull);
+      expect(c.setOpenShipment('0'), isTrue);
+      expect(c.shipment, isNull);
+      expect(c.shipmentAmount, 0);
+      expect(c.payable, 28000);
+    });
+
+    test('master shipment used when the config ships masters', () {
+      final withMaster = TenantConfig.fromSyncPayloads(
+        {
+          ...FakeBackend.northstarMaster(),
+          'shipmentMasters': [
+            {'id': 'ship-1', 'name': 'Gojek Instant', 'amount': '15000', 'active': true},
+          ],
+        },
+        FakeBackend.northstarOutlet(),
+      );
+      final c = makeCtrl(_singleEspresso(), cfg: withMaster);
+      expect(c.setMasterShipment(withMaster.shipmentMasters.first), isTrue);
+      expect(c.shipment!.isMaster, isTrue);
+      expect(c.shipment!.amount, 15000);
+      // 25000 + 2750 VAT + 15000 = 42750 → UP → 43000
+      expect(c.payable, 43000);
+    });
+
+    test('master shipment unavailable without shipped masters (open path only)', () {
+      final c = makeCtrl(_singleEspresso());
+      expect(c.setMasterShipment(ShipmentMaster(id: 'x', name: 'x', amount: 9000)), isFalse);
+      expect(c.error, kShipmentMastersUnavailable);
+      expect(c.shipment, isNull);
+    });
+
+    test('cancelling the shipment restores the original payable', () {
+      final c = makeCtrl(_singleEspresso());
+      c.setOpenShipment('7000');
+      expect(c.payable, isNot(28000));
+      c.cancelShipment();
+      expect(c.shipment, isNull);
+      expect(c.shipmentAmount, 0);
+      expect(c.payable, 28000);
+    });
+
+    test('settle body carries the OPEN shipment shape', () async {
+      final backend = _backend();
+      final c = makeCtrl(_singleEspresso(), backend: backend);
+      c.setOpenShipment('5000');
+      c.addPayment(cashMethod(config), 33000);
+      expect(await c.settle(), isTrue);
+      final ship = backend.lastSettleBody!['shipment'] as Map<String, dynamic>;
+      expect(ship['amount'], 5000);
+      expect(ship['description'], 'Shipment');
+      expect(ship.containsKey('masterShipmentId'), isFalse);
+    });
+
+    test('settle body carries the MASTER shipment shape', () async {
+      final backend = _backend();
+      final withMaster = TenantConfig.fromSyncPayloads(
+        {
+          ...FakeBackend.northstarMaster(),
+          'shipmentMasters': [
+            {'id': 'ship-1', 'name': 'Gojek Instant', 'amount': '15000', 'active': true},
+          ],
+        },
+        FakeBackend.northstarOutlet(),
+      );
+      final c = makeCtrl(_singleEspresso(), backend: backend, cfg: withMaster);
+      c.setMasterShipment(withMaster.shipmentMasters.first);
+      c.addPayment(cashMethod(withMaster), 43000);
+      expect(await c.settle(), isTrue);
+      final ship = backend.lastSettleBody!['shipment'] as Map<String, dynamic>;
+      expect(ship['masterShipmentId'], 'ship-1');
+      expect(ship.containsKey('amount'), isFalse);
     });
   });
 

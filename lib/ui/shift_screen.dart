@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
@@ -20,34 +21,36 @@ class ShiftScreen extends StatefulWidget {
 }
 
 class _ShiftScreenState extends State<ShiftScreen> {
-  late final ShiftController _controller;
   final _housebank = TextEditingController();
   final _counted = TextEditingController();
 
-  ShiftController get c => _controller;
+  /// The app-wide controller held by the session — pinned config applies
+  /// everywhere (order/payment flow included), not just this screen.
+  ShiftController get c => widget.session.shiftController;
+
+  /// The shift rules the POS currently runs on. Pinned to the config the
+  /// running shift started with (config change applies next day only).
+  ShiftGate get gate => widget.session.gateFor(widget.config);
 
   @override
   void initState() {
     super.initState();
-    _controller = ShiftController(
-      posApi: widget.session.posApi,
-      tenantId: widget.session.tenantId!,
-      deviceAssetId: widget.session.context.deviceId,
-    );
     final def = widget.config.shift.defaultHouseBank;
     _housebank.text = def > 0 ? '${def.round()}' : '';
   }
 
   @override
   void dispose() {
-    _controller.dispose();
     _housebank.dispose();
     _counted.dispose();
     super.dispose();
   }
 
   Future<void> _start() async {
-    final ok = await c.open(housebank: double.tryParse(_housebank.text.trim()));
+    final ok = await c.open(
+      housebank: double.tryParse(_housebank.text.trim()),
+      config: widget.config.shift,
+    );
     if (!mounted) return;
     if (!ok) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.error ?? 'Could not start shift')));
     if (ok) _counted.text = '0';
@@ -63,7 +66,7 @@ class _ShiftScreenState extends State<ShiftScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(c.isClosed ? 'Closing report' : (c.isOpen ? 'End shift' : 'Start shift'))),
+      appBar: AppBar(title: Text(c.isClosed ? 'Closing report' : (c.isOpen ? gate.endLabel : gate.startLabel))),
       body: SafeArea(
         child: ListenableBuilder(
           listenable: c,
@@ -83,8 +86,18 @@ class _ShiftScreenState extends State<ShiftScreen> {
   }
 
   List<Widget> _openForm() {
+    final g = gate;
     return [
-      const AuthHeader(title: 'Start shift', caption: 'Count the opening cash drawer and record the total.'),
+      AuthHeader(
+        title: g.startLabel,
+        caption: g.isAutomatic
+            ? 'Meal-shift cash count — count the opening cash drawer and record the single total.'
+            : 'Count the opening cash drawer and record the total.',
+      ),
+      if (g.windowNotConfigured) ...[
+        const ErrorBanner(message: 'Meal-shift window not configured — the outlet has not synced a shift range yet.'),
+        const SizedBox(height: 12),
+      ],
       TextField(
         controller: _housebank,
         enabled: !c.busy,
@@ -95,11 +108,12 @@ class _ShiftScreenState extends State<ShiftScreen> {
       const SizedBox(height: 8),
       const Text('Cash count is a single total — no denomination input.', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
       const SizedBox(height: 20),
-      PrimaryButton(label: 'Start shift', busy: c.busy, icon: Icons.play_arrow_rounded, onPressed: c.busy ? null : _start),
+      PrimaryButton(label: g.startLabel, busy: c.busy, icon: Icons.play_arrow_rounded, onPressed: c.busy ? null : _start),
     ];
   }
 
   List<Widget> _activeCard() {
+    final g = gate;
     return [
       Container(
         padding: const EdgeInsets.all(18),
@@ -114,10 +128,16 @@ class _ShiftScreenState extends State<ShiftScreen> {
               style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
           Text('Type: ${(c.shift?['shiftType'] ?? 'MANUAL')}', style: const TextStyle(color: PosTheme.tealSoft)),
+          if (g.isAutomatic)
+            Text('Meal-shift window: ${g.windowSummary}', style: const TextStyle(color: PosTheme.tealSoft, fontSize: 12)),
         ]),
       ),
+      if (c.configChangedSinceStart(widget.config.shift)) ...[
+        const SizedBox(height: 12),
+        const ErrorBanner(message: 'Shift config changed — the new rules apply from the NEXT day. This shift keeps the plan it started with.'),
+      ],
       const SizedBox(height: 24),
-      const Text('End shift', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.petrol)),
+      Text(g.endLabel, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.petrol)),
       const SizedBox(height: 10),
       TextField(
         controller: _counted,
@@ -127,7 +147,7 @@ class _ShiftScreenState extends State<ShiftScreen> {
         decoration: const InputDecoration(labelText: 'Counted cash (total)', prefixIcon: Icon(Icons.payments_outlined), prefixText: 'Rp '),
       ),
       const SizedBox(height: 20),
-      PrimaryButton(label: 'End shift', busy: c.busy, icon: Icons.logout, onPressed: c.busy ? null : _end),
+      PrimaryButton(label: g.endLabel, busy: c.busy, icon: Icons.logout, onPressed: c.busy ? null : _end),
     ];
   }
 

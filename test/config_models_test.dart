@@ -169,6 +169,45 @@ void main() {
     });
   });
 
+  group('ShiftConfig windows (AUTOMATIC)', () {
+    test('parses meal-shift windows and the recap window from the shift payload', () {
+      final outlet = outletFixture();
+      outlet['shift'] = {
+        'shiftType': 'AUTOMATIC',
+        'defaultHouseBank': '500000',
+        'roundingMode': 'UP',
+        'mealShiftWindows': [
+          {'id': 'w1', 'name': 'Lunch', 'startHour': 10, 'startMinute': 0, 'endHour': 15, 'endMinute': 0, 'enabled': true},
+          {'id': 'w2', 'name': 'Dinner', 'startHour': 18, 'startMinute': 30, 'endHour': 23, 'endMinute': 0, 'enabled': true},
+        ],
+        'recapWindow': {'id': 'r1', 'startHour': 0, 'startMinute': 0, 'durationMin': 10},
+      };
+      final cfg = TenantConfig.fromSyncPayloads(masterFixture(), outlet);
+      expect(cfg.shift.isAutomatic, isTrue);
+      expect(cfg.shift.mealShiftWindows, hasLength(2));
+      expect(cfg.shift.mealShiftWindows.first.label, 'Lunch 10:00–15:00');
+      expect(cfg.shift.mealShiftWindows.first.contains(DateTime(2026, 9, 28, 12, 0)), isTrue);
+      expect(cfg.shift.mealShiftWindows.first.contains(DateTime(2026, 9, 28, 9, 59)), isFalse);
+      expect(cfg.shift.recapWindow!.label, '00:00–00:10');
+      expect(cfg.shift.recapWindow!.contains(DateTime(2026, 9, 28, 0, 5)), isTrue);
+      expect(cfg.shift.recapWindow!.contains(DateTime(2026, 9, 28, 0, 10)), isFalse);
+    });
+
+    test('missing windows parse tolerantly (empty/null — the server ships none today)', () {
+      final cfg = TenantConfig.fromSyncPayloads(masterFixture(), outletFixture());
+      expect(cfg.shift.mealShiftWindows, isEmpty);
+      expect(cfg.shift.recapWindow, isNull);
+      expect(cfg.shift.isAutomatic, isFalse);
+    });
+
+    test('sameRules distinguishes a shift-type / window change (next-day rule)', () {
+      final manual = ShiftConfig.fromJson({'shiftType': 'MANUAL'});
+      final auto = ShiftConfig.fromJson({'shiftType': 'AUTOMATIC'});
+      expect(manual.sameRules(auto), isFalse);
+      expect(manual.sameRules(ShiftConfig.fromJson({'shiftType': 'MANUAL'})), isTrue);
+    });
+  });
+
   group('MenuLayout.buildTree (flat + nested)', () {
     test('flat node list assembles a parent→child tree', () {
       final layout = MenuLayout.fromJson({
