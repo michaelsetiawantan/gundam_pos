@@ -8,6 +8,7 @@ import 'package:gundam_pos/data/config_cache.dart';
 import 'package:gundam_pos/data/local_db.dart';
 import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/data/print_format_store.dart';
+import 'package:gundam_pos/data/print_log_store.dart';
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
@@ -16,6 +17,7 @@ import 'package:gundam_pos/models/license_info.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/services/print_dispatcher.dart';
+import 'package:gundam_pos/services/print_log.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/printer_health_report.dart';
@@ -40,6 +42,7 @@ class AppSession extends ChangeNotifier {
     DateTime Function()? now,
     PrintTransport? printTransport,
     PrinterHealthReporter? printerHealthReporter,
+    PrintLogStore? printLogStore,
   })  : _posApi = posApi,
         _store = sessionStore,
         _addrStore = serverAddressStore ?? InMemoryServerAddressStore(),
@@ -47,7 +50,8 @@ class AppSession extends ChangeNotifier {
         _push = pushStore ?? MemoryPushStore(),
         _now = now ?? DateTime.now,
         _printTransport = printTransport ?? _defaultPrintTransport(),
-        _healthReporter = printerHealthReporter;
+        _healthReporter = printerHealthReporter,
+        printLogs = printLogStore ?? MemoryPrintLogStore(now: now);
 
   final PosApi _posApi;
   final SessionStore _store;
@@ -162,6 +166,47 @@ class AppSession extends ChangeNotifier {
   PrintDispatcher? _printDispatcher;
   PrintDispatcher? get printDispatcher => _printDispatcher;
 
+  /// Local print-attempt audit (SQLite `print_log` on device). Every attempt —
+  /// failure, fallback and success — is recorded here and shipped to the server
+  /// as development material.
+  final PrintLogStore printLogs;
+
+  late final PrintLogAudit _printAudit = PrintLogAudit(store: printLogs, now: _now);
+  late final PrintLogUploader _logUploader = PrintLogUploader(api: _posApi, store: printLogs);
+
+  /// Cached pending-upload count; refreshed by [refreshPrintLogPending] and
+  /// after each upload pass. The diagnostics screen shows it honestly.
+  int printLogPending = 0;
+
+  Future<int> refreshPrintLogPending() async {
+    try {
+      printLogPending = await printLogs.pendingUploadCount();
+    } catch (_) {
+      printLogPending = 0;
+    }
+    notifyListeners();
+    return printLogPending;
+  }
+
+  /// Ship pending print logs to the server, then prune uploaded history.
+  /// Best-effort and idempotent: offline simply leaves rows pending. Returns
+  /// the number of rows accepted this pass.
+  Future<int> uploadPrintLogs() async {
+    final tenantId = ctx.tenantId;
+    final assetId = ctx.deviceId;
+    if (tenantId == null || assetId == null) return 0;
+    var uploaded = 0;
+    try {
+      final res = await _logUploader.uploadPending(tenantId: tenantId, assetId: assetId);
+      uploaded = res.uploaded;
+      await printLogs.pruneUploaded(maxRows: kPrintLogMaxRows, maxAge: kPrintLogMaxAge);
+    } catch (_) {
+      // keep rows pending for the next pass
+    }
+    await refreshPrintLogPending();
+    return uploaded;
+  }
+
   /// Wire the print path (queue + transport) once the device printer is known.
   void attachPrintBroker(PrintBroker broker) {
     _printBroker = broker;
@@ -183,10 +228,11 @@ class AppSession extends ChangeNotifier {
     );
     final d = _printDispatcher;
     if (d == null || d.broker != broker) {
-      _printDispatcher = PrintDispatcher(broker: broker, routing: routing, context: base);
+      _printDispatcher = PrintDispatcher(broker: broker, routing: routing, context: base, logs: _printAudit);
     } else {
       d.routing = routing;
       d.context = base;
+      d.logs = _printAudit;
     }
   }
 
@@ -435,6 +481,8 @@ class AppSession extends ChangeNotifier {
         }
       }
       lastSyncAt = _now();
+      // Best-effort: ship any locally-recorded print attempts (additive).
+      await uploadPrintLogs();
       return true;
     } on PosApiException catch (e) {
       lastError = _configError(e);
@@ -544,12 +592,21 @@ class AppDependencies {
         return '${dir.path}/gundam_pos/gundam.db';
       },
     );
+    // Local print-attempt audit persists to the same device DB file.
+    final printLogStore = SqlitePrintLogStore(
+      localDb: LocalDb(),
+      pathProvider: () async {
+        final dir = await getApplicationSupportDirectory();
+        return '${dir.path}/gundam_pos/gundam.db';
+      },
+    );
     final session = AppSession(
       posApi: PosApi(client),
       sessionStore: st,
       serverAddressStore: addressStore ?? SecureServerAddressStore(),
       receiptSequence: posStore,
       pushStore: posStore,
+      printLogStore: printLogStore,
       printerHealthReporter: PrinterHealthReporter(client: client),
     );
     ref[0] = session;

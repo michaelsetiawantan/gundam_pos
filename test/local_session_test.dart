@@ -4,8 +4,8 @@ import 'package:gundam_pos/state/session_store.dart';
 
 void main() {
   group('local SQLite schema', () {
-    test('user_version contract is 2 (migration-ready)', () {
-      expect(schemaVersion, 2);
+    test('user_version contract is 3 (migration-ready)', () {
+      expect(schemaVersion, 3);
     });
 
     test('v1 migration creates all LOCAL-SCHEMA tables idempotently', () {
@@ -27,6 +27,15 @@ void main() {
       ]) {
         expect(ddl, contains('CREATE TABLE IF NOT EXISTS $table'));
       }
+    });
+
+    test('v3 migration adds the print_log audit table', () {
+      expect(migrationUpStatements(1).join('\n'), isNot(contains('CREATE TABLE IF NOT EXISTS print_log')));
+      final ddl = migrationUpStatements(3).join('\n');
+      expect(ddl, contains('CREATE TABLE IF NOT EXISTS print_log'));
+      expect(ddl, contains('client_log_id'));
+      expect(ddl, contains('upload_state'));
+      expect(ddl, contains('idx_printlog_upload'));
     });
 
     test('migration adds the receipt-idempotency and queue indexes', () {

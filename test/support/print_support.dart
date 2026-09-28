@@ -2,6 +2,7 @@ import 'package:gundam_pos/data/print_format_store.dart';
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/services/print_dispatcher.dart';
+import 'package:gundam_pos/services/print_log.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 
@@ -13,6 +14,12 @@ class RecordingTransport implements PrintTransport {
 
   @override
   Future<void> send(PrintJob job) async => jobs.add(job);
+}
+
+/// Fails every send — used to exercise the FAILED audit row.
+class AlwaysFailingTransport implements PrintTransport {
+  @override
+  Future<void> send(PrintJob job) async => throw StateError('offline');
 }
 
 TicketContext testContext({String type = 'BILL'}) => TicketContext(
@@ -30,17 +37,20 @@ TicketContext testContext({String type = 'BILL'}) => TicketContext(
 /// transport. The health probes are stubbed so tests never open a socket or a
 /// platform channel.
 PrintDispatcher buildDispatcher(
-  RecordingTransport transport, {
+  PrintTransport transport, {
   Map<String, dynamic>? outlet,
   BluetoothProbe? bluetooth,
   PrintFormatStore? store,
+  PrintLogAudit? logs,
+  PrinterRouting? routing,
 }) {
-  final routing = PrinterRouting.parse(outlet ?? FakeBackend.northstarPrintModel());
+  final resolved = routing ?? PrinterRouting.parse(outlet ?? FakeBackend.northstarPrintModel());
   final broker = PrintBroker(store: store ?? PrintFormatStore(), queue: PrintQueue(transport: transport));
   return PrintDispatcher(
     broker: broker,
-    routing: routing,
+    routing: resolved,
     context: testContext(),
+    logs: logs,
     health: PrinterHealthChecker(
       connect: (host, port) async => false,
       bluetooth: bluetooth ?? (mac, supportsDeviceStatus) async => PrinterLink(PrinterLinkState.ready, detail: '$mac (test)'),

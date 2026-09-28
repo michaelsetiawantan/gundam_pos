@@ -15,6 +15,7 @@ import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
+import 'package:gundam_pos/services/print_log.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 
@@ -57,9 +58,15 @@ class PrintDispatcher {
     TicketContext? context,
     TicketPayloadBuilder payloads = const TicketPayloadBuilder(),
     PrinterHealthChecker? health,
+    PrintLogAudit? logs,
   })  : context = context ?? TicketContext(),
         _payloads = payloads,
-        _health = health ?? PrinterHealthChecker();
+        _health = health ?? PrinterHealthChecker(),
+        _logs = logs;
+
+  /// Local print-attempt audit (null → logging disabled). Additive: the
+  /// dispatcher's alerts and never-throw contract are unchanged.
+  PrintLogAudit? _logs;
 
   /// Live broker (swapped when the format store / transport is rebuilt).
   PrintBroker broker;
@@ -69,6 +76,9 @@ class PrintDispatcher {
 
   /// Base ticket context (store/cashier/device); per-ticket fields are copied.
   TicketContext context;
+
+  /// Swap the audit wired into the print path (mirrors broker/routing reset).
+  set logs(PrintLogAudit? value) => _logs = value;
 
   final TicketPayloadBuilder _payloads;
   final PrinterHealthChecker _health;
@@ -134,7 +144,7 @@ class PrintDispatcher {
         tableName: tableName,
       );
     }
-    return _print(ticketType: 'BILL', payload: payload, printers: routing.billPrinters());
+    return _print(ticketType: 'BILL', payload: payload, printers: routing.billPrinters(), receiptId: receiptId, orderId: null);
   }
 
   // ------------------------------------------- captain order + bev labels ---
@@ -256,16 +266,36 @@ class PrintDispatcher {
     required String ticketType,
     required Map<String, dynamic> payload,
     required List<ClientPrinter> printers,
+    String? receiptId,
+    String? orderId,
   }) async {
     final printed = <TicketRender>[];
     final alerts = <String>[];
+    final audit = _logs;
     if (printers.isEmpty) {
       alerts.add('No printer configured for $ticketType — nothing printed.');
+      await audit?.recordFallback(
+        ticketType: ticketType,
+        errorCode: 'no_printer',
+        warnings: ['No printer configured for $ticketType — nothing printed.'],
+        receiptId: receiptId,
+        orderId: orderId,
+      );
       return PrintOutcome(printed: printed, alerts: alerts);
     }
     for (final p in printers) {
       if (!p.supported) {
         alerts.add("Printer '${p.name}' uses ${p.transport}, which this build cannot print to — skipped.");
+        await audit?.recordFallback(
+          ticketType: ticketType,
+          printerId: p.id,
+          printerName: p.name,
+          printerTransport: p.transport,
+          errorCode: 'unsupported_transport',
+          warnings: ["Printer '${p.name}' uses ${p.transport}, which this build cannot print to — skipped."],
+          receiptId: receiptId,
+          orderId: orderId,
+        );
         continue;
       }
       // Honest reporting: an unknown or declared-but-unimplemented dialect
@@ -275,6 +305,8 @@ class PrintDispatcher {
             ? "Printer '${p.name}' reports protocol '${p.protocol}' — '${p.dialect}' is declared but not implemented by this build; using the default $kDefaultEscPosDialect dialect."
             : "Printer '${p.name}' reports protocol '${p.protocol}' — unknown; using the default $kDefaultEscPosDialect dialect.");
       }
+      final alertsBefore = alerts.length;
+      final attempt = await _beginAudit(ticketType: ticketType, payload: payload, p: p, receiptId: receiptId, orderId: orderId);
       try {
         final rendered = await broker.printTicket(
           ticketType: ticketType,
@@ -288,10 +320,55 @@ class PrintDispatcher {
         if (images > 0 && !p.effectiveRasterSupport) {
           alerts.add("Printer '${p.name}' has no raster support — $images image block(s) skipped.");
         }
+        const attemptCount = 1;
+        if (attempt?.fallback ?? false) {
+          await attempt!.completeFallback(attemptCount: attemptCount, extraWarnings: alerts.sublist(alertsBefore));
+        } else {
+          await attempt?.completeOk(attemptCount: attemptCount);
+        }
       } catch (e) {
         alerts.add("Printer '${p.name}' failed: $e");
+        final attempts = e is PrintJobFailed ? e.attempts : 1;
+        await attempt?.completeFailed(
+          attemptCount: attempts,
+          errorCode: printErrorCode(e is PrintJobFailed ? (e.lastError ?? e) : e),
+          errorDetail: '$e',
+        );
       }
     }
     return PrintOutcome(printed: printed, alerts: alerts);
+  }
+
+  /// Insert the pre-attempt audit row (encode preview supplies the encoder
+  /// warnings, byte length, dialect + code-page fallback flags) and return the
+  /// handle finalized after the transport call. Null when logging is off.
+  Future<PrintAttempt?> _beginAudit({
+    required String ticketType,
+    required Map<String, dynamic> payload,
+    required ClientPrinter p,
+    String? receiptId,
+    String? orderId,
+  }) async {
+    final audit = _logs;
+    if (audit == null) return null;
+    try {
+      final rendered = broker.renderTicket(ticketType: ticketType, payload: payload, widthMm: p.widthMm);
+      final encode = encodePrintJobDetailed(
+        PrintJob(ticketType: ticketType, lines: rendered.lines, entries: rendered.entries, printer: p.toPrintPrinter()),
+        widthMm: p.widthMm,
+      );
+      return await audit.begin(
+        ticketType: ticketType,
+        printer: p,
+        encode: encode,
+        renderedLines: rendered.lines,
+        usedFormat: rendered.usedFormat,
+        formatFallbackReason: rendered.fallbackReason,
+        receiptId: receiptId,
+        orderId: orderId,
+      );
+    } catch (_) {
+      return null; // audit is additive — never block a print
+    }
   }
 }

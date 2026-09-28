@@ -1,9 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gundam_pos/data/print_format_store.dart';
+import 'package:gundam_pos/data/print_log_store.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/services/print_log.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/state/order_controller.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
@@ -230,6 +232,43 @@ void main() {
       });
       final links = await d.checkHealth();
       expect(links['usb']!.state, PrinterLinkState.unsupported);
+    });
+  });
+
+  group('print audit — the real print path records locally', () {
+    money.MoneyFlow flow() => money.computeMoneyFlow(
+          [money.MoneyLine(subtotal: 45000, vatMode: money.VatScMode.exclude, vatRate: 11, scMode: money.VatScMode.none)],
+          0,
+          0,
+          money.RoundingMode.none,
+        );
+    money.SplitResult split(money.MoneyFlow f) => money.finalizePayments(f.total, [
+          money.PaymentInput(outletMethodId: 'pm-cash', type: money.PayType.cash, amount: f.total),
+        ]);
+
+    test('a failed bill print lands in the local log with its error and attempt count', () async {
+      final store = MemoryPrintLogStore();
+      final d = buildDispatcher(AlwaysFailingTransport(), logs: PrintLogAudit(store: store));
+      final f = flow();
+      final out = await d.printBill(items: [PrintItem(name: 'Nasi', itemId: 'item-nasi', qty: 1, unitPrice: 45000, batchIndex: 0)], receiptId: 'R-1', flow: f, split: split(f));
+      expect(out.alerts, isNotEmpty);
+      final row = (await store.list()).single;
+      expect(row.outcome, kOutcomeFailed);
+      expect(row.ticketType, 'BILL');
+      expect(row.receiptId, 'R-1');
+      expect(row.printerTransport, 'NETWORK');
+      expect(row.attemptCount, 3); // the Northstar BILL printer's retryCount
+      expect(row.uploadState, kPrintLogPending);
+    });
+
+    test('a successful bill print is recorded as OK (metadata only)', () async {
+      final store = MemoryPrintLogStore();
+      final d = buildDispatcher(RecordingTransport(), logs: PrintLogAudit(store: store));
+      final f = flow();
+      await d.printBill(items: [PrintItem(name: 'Nasi', itemId: 'item-nasi', qty: 1, unitPrice: 45000, batchIndex: 0)], receiptId: 'R-1', flow: f, split: split(f));
+      final row = (await store.list()).single;
+      expect(row.outcome, kOutcomeOk);
+      expect(row.renderedText, isNull);
     });
   });
 

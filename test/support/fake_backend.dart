@@ -30,6 +30,9 @@ class FakeBackend {
   /// Last settle request body, so tests can assert what the tablet sent.
   Map<String, dynamic>? lastSettleBody;
 
+  /// Last print-logs upload body (`POST /api/pos/print-logs`).
+  Map<String, dynamic>? lastPrintLogsBody;
+
   /// `openedAt` the fake order-create route returns. Defaults to now; set it to
   /// simulate a pre-midnight hanging order.
   DateTime? openOrderOpenedAt;
@@ -203,6 +206,11 @@ class FakeBackend {
             });
       case '/api/auth/logout':
         return _json(200, {'ok': true});
+      case '/api/pos/print-logs':
+        final body = jsonDecode(req.body) as Map<String, dynamic>;
+        lastPrintLogsBody = body;
+        final logs = body['logs'] as List? ?? const [];
+        return _json(200, {'accepted': logs.length, 'alreadySeen': 0, 'rejected': 0});
       case '/api/pos/config/state':
         return _json(200, {
           'tenantId': 't1',

@@ -6,6 +6,7 @@ import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
+import 'package:gundam_pos/ui/print_diagnostics_screen.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
@@ -39,6 +40,13 @@ class _MoreScreenState extends State<MoreScreen> {
   String? _busyPrinterId;
 
   static const _envPrinterHost = String.fromEnvironment('POS_PRINTER_HOST', defaultValue: '');
+
+  @override
+  void initState() {
+    super.initState();
+    // Refresh the pending print-log count so the entry below is honest.
+    widget.session.refreshPrintLogPending();
+  }
 
   Future<void> _refresh() async {
     final ok = await widget.session.refreshConfig();
@@ -254,6 +262,23 @@ class _MoreScreenState extends State<MoreScreen> {
                   OutlinedButton(onPressed: _reportHealth, child: const Text('Report all printer health')),
                   const SizedBox(height: 8),
                   const Text('Bluetooth prints over Classic SPP / ESC-POS. USB prints over Android USB Host (CDC-ACM / CH340 / PL2303 / FTDI drivers built in). Test Print is manual only — never automatic.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+                ]),
+              ),
+              _Section(
+                icon: Icons.bug_report,
+                title: 'Print diagnostics',
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _infoRow('Pending upload', '${s.printLogPending} print log(s)'),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => PrintDiagnosticsScreen(session: s)),
+                    ),
+                    child: const Text('Open print diagnostics'),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Every print attempt (failure, fallback, success) is recorded locally, then shipped to the server as development material.',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                 ]),
               ),

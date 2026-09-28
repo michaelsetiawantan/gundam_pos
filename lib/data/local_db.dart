@@ -8,9 +8,9 @@ library;
 
 import 'package:sqflite/sqflite.dart' as sqf;
 
-const int schemaVersion = 2;
+const int schemaVersion = 3;
 
-/// Migration step v2 → user_version=2. Every step is idempotent (IF NOT EXISTS
+/// Migration step v1 → user_version=1. Every step is idempotent (IF NOT EXISTS
 /// / guards). Each bump to `schemaVersion` MUST add a new step here; never
 /// alter an earlier step in place.
 const List<List<String>> migrations = [
@@ -188,14 +188,46 @@ const List<List<String>> migrations = [
     'CREATE INDEX IF NOT EXISTS idx_snap_type ON config_snapshots(snapshot_type, taken_at);',
     'CREATE INDEX IF NOT EXISTS idx_guests_dup ON local_guests(phone, email);',
     'CREATE INDEX IF NOT EXISTS idx_media_key ON local_media_assets(asset_key);',
-  // v2 — reserved for incremental additions (structural no-op; keep empty and
-  // append future steps as new list entries in `migrations` order).
+  ],
+  // v3 (user_version=3) — local print-attempt audit. Additive; a device already
+  // at v2 simply gains this table. Never alter an earlier step in place.
+  [
+    '''
+    CREATE TABLE IF NOT EXISTS print_log (
+      id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_log_id          TEXT UNIQUE NOT NULL,
+      ticket_type            TEXT NOT NULL,
+      receipt_id             TEXT,
+      order_id               TEXT,
+      printer_id             TEXT,
+      printer_name           TEXT,
+      printer_transport      TEXT,
+      outcome                TEXT NOT NULL DEFAULT 'FAILED',
+      attempt_count          INTEGER NOT NULL DEFAULT 0,
+      error_code             TEXT,
+      error_detail           TEXT,
+      duration_ms            INTEGER,
+      byte_length            INTEGER,
+      dialect_code           TEXT,
+      dialect_fallback       INTEGER NOT NULL DEFAULT 0,
+      code_page_code         TEXT,
+      warnings_json          TEXT NOT NULL DEFAULT '[]',
+      rendered_text          TEXT,
+      created_at             INTEGER NOT NULL,
+      upload_state           TEXT NOT NULL DEFAULT 'pending',
+      upload_attempts        INTEGER NOT NULL DEFAULT 0,
+      last_upload_error      TEXT,
+      sent_at                INTEGER
+    );''',
+    'CREATE INDEX IF NOT EXISTS idx_printlog_created ON print_log(created_at);',
+    'CREATE INDEX IF NOT EXISTS idx_printlog_upload ON print_log(upload_state, created_at);',
   ],
 ];
 
 /// SQL to apply when migrating the DB up to the given absolute version step.
 List<String> migrationUpStatements(int targetVersion) => [
       if (targetVersion >= 1) ...migrations[0],
+      if (targetVersion >= 2) ...migrations[1],
       // future steps appended in order
     ];
 

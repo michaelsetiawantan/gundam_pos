@@ -156,4 +156,14 @@ class PosApi {
   // ------------------------------------------------------------------ print --
   Future<Map<String, dynamic>> printEnqueue(String outletId, List<Map<String, dynamic>> jobs) =>
       _client.post('/api/pos/print', body: {'outletId': outletId, 'jobs': jobs});
+
+  /// Upload a batch of device-observed print attempts as development material
+  /// (`POST /api/pos/print-logs`). Idempotent on each log's `clientLogId`; the
+  /// response is a summary of accepted / alreadySeen / rejected.
+  Future<Map<String, dynamic>> postPrintLogs({
+    required String tenantId,
+    required String assetId,
+    required List<Map<String, dynamic>> logs,
+  }) =>
+      _client.post('/api/pos/print-logs', body: {'tenantId': tenantId, 'assetId': assetId, 'logs': logs});
 }
