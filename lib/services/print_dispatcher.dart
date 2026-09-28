@@ -6,8 +6,8 @@
 /// queue. It NEVER throws and NEVER blocks a sale: a missing printer or an
 /// unsupported transport becomes an honest [PrintOutcome.alerts] entry instead.
 ///
-/// Transports: NETWORK :9100 and Classic Bluetooth SPP write bytes on this
-/// build. A USB printer is reported as unsupported, never pretended.
+/// Transports: NETWORK :9100, Classic Bluetooth SPP, and USB Host (the four
+/// common serial bridge chips are built into the APK) write bytes on this build.
 library;
 
 import 'package:gundam_pos/logic/money.dart' as money;
@@ -90,6 +90,8 @@ class PrintDispatcher {
         host: p.ip,
         port: p.port,
         bluetoothMac: p.bluetoothMac,
+        usbVidPid: p.usbVidPid,
+        usbChip: p.usbChip,
       );
     }
     return out;

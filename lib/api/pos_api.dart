@@ -10,6 +10,12 @@ class PosApi {
 
   final ApiClient _client;
 
+  /// The base URL every call resolves against (read at request time).
+  String get baseUrl => _client.baseUrl;
+
+  /// Switch the whole API surface to a new runtime server address.
+  set baseUrl(String value) => _client.baseUrl = value;
+
   // ------------------------------------------------------------------ auth --
   // Activation (public — no session).
   Future<Map<String, dynamic>> redeem({

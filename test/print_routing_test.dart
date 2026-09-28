@@ -124,7 +124,7 @@ void main() {
       expect(r2.billPrinters(), isEmpty);
     });
 
-    test('BLUETOOTH is supported on this build; USB is reported, not dropped', () {
+    test('BLUETOOTH and USB are supported on this build', () {
       final unsupported = r.unsupportedPrinters;
       expect(r.printerById('pr-bt')!.supported, isTrue); // Bluetooth SPP is wired
       expect(r.printerById('pr-front')!.supported, isTrue);
@@ -135,8 +135,8 @@ void main() {
           {'id': 'usb', 'name': 'USB', 'transport': 'USB', 'usbVidPid': '04b8:0e15'},
         ],
       });
-      expect(withUsb.unsupportedPrinters.single.id, 'usb');
-      expect(withUsb.printerById('usb')!.supported, isFalse);
+      expect(withUsb.unsupportedPrinters, isEmpty); // USB Host is wired now
+      expect(withUsb.printerById('usb')!.supported, isTrue);
     });
   });
 

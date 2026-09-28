@@ -21,10 +21,10 @@ import 'package:gundam_pos/services/print_broker.dart';
 /// Transports the model understands. Anything else is skipped on parse.
 const Set<String> kKnownPrintTransports = {'NETWORK', 'BLUETOOTH', 'USB'};
 
-/// Transports this build can actually write bytes to: raw TCP :9100 and Classic
-/// Bluetooth SPP (via the platform channel). USB is still reported as
-/// unsupported, never faked.
-const Set<String> kSupportedPrintTransports = {'NETWORK', 'BLUETOOTH'};
+/// Transports this build can actually write bytes to: raw TCP :9100, Classic
+/// Bluetooth SPP (via the platform channel), and USB Host with the four common
+/// serial bridge chips built in (CDC-ACM/CH340/PL2303/FTDI).
+const Set<String> kSupportedPrintTransports = {'NETWORK', 'BLUETOOTH', 'USB'};
 
 bool isTransportKnown(String transport) => kKnownPrintTransports.contains(transport.toUpperCase());
 
@@ -48,6 +48,7 @@ class ClientPrinter {
     this.port = 9100,
     this.bluetoothMac,
     this.usbVidPid,
+    this.usbChip,
     this.widthMm = 80,
     this.supportsRasterImage = false,
     this.shared = false,
@@ -83,6 +84,9 @@ class ClientPrinter {
       port: _int(j['port']) ?? 9100,
       bluetoothMac: _str(j['bluetoothMac']),
       usbVidPid: _str(j['usbVidPid']),
+      // The bridge chip is a parallel (web) addition; absent → null (documented
+      // fallback: the USB transport derives the chip from the attached device).
+      usbChip: _str(j['usbChip'] ?? nestedModel['usbChip'] ?? nestedLegacy['usbChip']),
       widthMm: _int(j['widthMm']) ?? 80,
       supportsRasterImage: (j['supportsRasterImage'] as bool?) ?? false,
       shared: (j['shared'] as bool?) ?? false,
@@ -109,6 +113,11 @@ class ClientPrinter {
   final int port;
   final String? bluetoothMac;
   final String? usbVidPid;
+
+  /// Bridge chip the web config asks for (`CDC_ACM`|`CH340`|`PL2303`|`FTDI`).
+  /// null when the field is absent (a parallel web change) — the USB transport
+  /// then derives the chip from the attached device.
+  final String? usbChip;
   final int widthMm;
   final bool supportsRasterImage;
 
@@ -145,6 +154,8 @@ class ClientPrinter {
         port: port,
         transport: transport,
         bluetoothMac: bluetoothMac,
+        usbVidPid: usbVidPid,
+        usbChip: usbChip,
         widthMm: widthMm,
         supportsRasterImage: effectiveRasterSupport,
         dialect: dialect,

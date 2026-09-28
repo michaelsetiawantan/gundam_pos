@@ -30,10 +30,11 @@ void main() {
       expect(link.isUsable, isFalse);
     });
 
-    test('bluetooth without a MAC → not paired; usb → unsupported on this build', () async {
+    test('bluetooth without a MAC → not paired; usb without addressing → offline', () async {
       final c = checker(reachable: true);
       expect((await c.check(transport: 'BLUETOOTH')).state, PrinterLinkState.notPaired);
-      expect((await c.check(transport: 'USB')).state, PrinterLinkState.unsupported);
+      // USB Host is wired now; a printer with no VID:PID/chip is reported offline.
+      expect((await c.check(transport: 'USB')).state, PrinterLinkState.offline);
     });
 
     test('bluetooth with a MAC probes the SPP link (injected)', () async {
@@ -60,8 +61,10 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Sync'), findsOneWidget);
-    expect(find.text('Printer health'), findsOneWidget);
     expect(find.textContaining('0 item(s)'), findsOneWidget); // pending push empty
+    // 'Printer health' may sit below the fold (new Server section above it).
+    await tester.scrollUntilVisible(find.text('Printer health'), 300, scrollable: find.byType(Scrollable).first);
+    expect(find.text('Printer health'), findsOneWidget);
 
     // Scroll to the lower sections (sign-out + update) which are below the fold.
     await tester.scrollUntilVisible(find.text('Sign out of this device'), 300, scrollable: find.byType(Scrollable).first);

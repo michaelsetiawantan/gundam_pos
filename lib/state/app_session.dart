@@ -19,6 +19,7 @@ import 'package:gundam_pos/services/print_dispatcher.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/printer_health_report.dart';
+import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
@@ -33,6 +34,7 @@ class AppSession extends ChangeNotifier {
   AppSession({
     required PosApi posApi,
     required SessionStore sessionStore,
+    ServerAddressStore? serverAddressStore,
     ReceiptSequenceStore? receiptSequence,
     PushStore? pushStore,
     DateTime Function()? now,
@@ -40,6 +42,7 @@ class AppSession extends ChangeNotifier {
     PrinterHealthReporter? printerHealthReporter,
   })  : _posApi = posApi,
         _store = sessionStore,
+        _addrStore = serverAddressStore ?? InMemoryServerAddressStore(),
         _receipts = ReceiptSequencer(store: receiptSequence ?? MemoryReceiptSequenceStore()),
         _push = pushStore ?? MemoryPushStore(),
         _now = now ?? DateTime.now,
@@ -48,16 +51,18 @@ class AppSession extends ChangeNotifier {
 
   final PosApi _posApi;
   final SessionStore _store;
+  final ServerAddressStore _addrStore;
   final ReceiptSequencer _receipts;
   final PushStore _push;
   final DateTime Function() _now;
   final PrintTransport _printTransport;
 
-  /// Default real transports: network :9100 + Classic Bluetooth SPP. USB stays
-  /// unsupported until the USB-host path is implemented.
+  /// Default real transports: network :9100, Classic Bluetooth SPP, and USB Host
+  /// (CDC-ACM/CH340/PL2303/FTDI built into the APK).
   static PrintTransport _defaultPrintTransport() => PrintTransportRouter({
         'NETWORK': const NetworkPrintTransport(),
         'BLUETOOTH': BluetoothPrintTransport(),
+        'USB': UsbPrintTransport(),
       });
 
   final PrinterHealthReporter? _healthReporter;
@@ -84,6 +89,18 @@ class AppSession extends ChangeNotifier {
 
   PosContext ctx = const PosContext();
   PosStage stage = PosStage.checking;
+
+  /// The server address in use RIGHT NOW. Precedence: persisted runtime value
+  /// (operator-entered) > build-time `--dart-define=POS_API_BASE` > default.
+  /// Every network call resolves against [_posApi.baseUrl], which is kept in
+  /// sync with this value.
+  String serverAddress = resolveBaseUrl();
+
+  /// Informational: plain `http` on a non-local host means some clients reject
+  /// `Secure` session cookies, so a login failure there is expected until the
+  /// server side allows it. Never a hard block.
+  bool get insecureHttpWarning => isInsecureServerUrl(serverAddress);
+
   TenantConfig? config;
   Map<String, int> deviceVersions = const {};
   DateTime? lastSyncAt;
@@ -244,8 +261,29 @@ class AppSession extends ChangeNotifier {
       ctx = ctx.copyWith(deviceId: dId);
       await _store.save(ctx);
     }
+    // Apply the persisted runtime server address (if any) before any call.
+    serverAddress = resolveBaseUrl(runtime: await _addrStore.load());
+    _posApi.baseUrl = serverAddress;
     _stageFromContext();
     notifyListeners();
+  }
+
+  /// Normalise, probe, then persist + apply an operator-entered server address.
+  /// The address is only stored/used when the probe confirms a reachable
+  /// Gundam service — a failed probe NEVER wipes an already-working address.
+  /// Returns the honest probe result for the UI to display.
+  Future<ServerProbeResult> setServerAddress(String input, {ServerProbe? probe}) async {
+    final normalized = normalizeServerAddress(input);
+    if (normalized == null) {
+      return const ServerProbeResult(ServerProbeState.invalid);
+    }
+    final result = await (probe ?? ServerProbe()).probe(normalized);
+    if (!result.ok) return result;
+    serverAddress = normalized;
+    _posApi.baseUrl = normalized;
+    await _addrStore.save(normalized);
+    notifyListeners();
+    return result;
   }
 
   void _stageFromContext() {
@@ -489,7 +527,7 @@ extension _Sessionless on PosContext {
 class AppDependencies {
   AppDependencies._();
 
-  static AppSession create({SessionStore? store}) {
+  static AppSession create({SessionStore? store, ServerAddressStore? addressStore}) {
     final st = store ?? SecureSessionStore();
     final ref = <AppSession?>[null];
     final client = ApiClient(
@@ -509,6 +547,7 @@ class AppDependencies {
     final session = AppSession(
       posApi: PosApi(client),
       sessionStore: st,
+      serverAddressStore: addressStore ?? SecureServerAddressStore(),
       receiptSequence: posStore,
       pushStore: posStore,
       printerHealthReporter: PrinterHealthReporter(client: client),

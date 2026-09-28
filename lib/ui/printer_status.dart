@@ -37,6 +37,53 @@ class PrinterResultCard extends StatelessWidget {
   }
 }
 
+/// One configured USB printer with its honest status and a MANUAL Test Print
+/// button (never an automatic test). The bridge chip comes from the web config;
+/// the driver itself is built into the APK.
+class UsbPrinterRow extends StatelessWidget {
+  const UsbPrinterRow({
+    super.key,
+    required this.printer,
+    required this.status,
+    required this.busy,
+    required this.onCheck,
+    required this.onTest,
+    this.showCheck = true,
+  });
+
+  final ClientPrinter printer;
+  final PrinterLink? status;
+  final bool busy;
+  final VoidCallback onCheck;
+  final VoidCallback onTest;
+  final bool showCheck;
+
+  @override
+  Widget build(BuildContext context) {
+    final endpoint = '${printer.usbVidPid ?? 'no VID:PID'}  ·  ${printer.usbChip ?? 'chip auto'}';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: PosTheme.mist, borderRadius: BorderRadius.circular(10), border: Border.all(color: PosTheme.line)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${printer.name}  ·  $endpoint', style: const TextStyle(fontWeight: FontWeight.w700)),
+        if (status != null) ...[
+          const SizedBox(height: 8),
+          PrinterResultCard(link: status!),
+        ],
+        const SizedBox(height: 8),
+        Row(children: [
+          if (showCheck) ...[
+            OutlinedButton(onPressed: busy ? null : onCheck, child: const Text('Check status')),
+            const SizedBox(width: 10),
+          ],
+          FilledButton(onPressed: busy ? null : onTest, child: const Text('Test print')),
+        ]),
+      ]),
+    );
+  }
+}
+
 /// One configured Bluetooth printer with its honest status and a MANUAL Test
 /// Print button (never an automatic test).
 class BluetoothPrinterRow extends StatelessWidget {

@@ -163,17 +163,22 @@ class FakeBackend {
 
   Map<String, dynamic> get _license => licenseBody ?? activeLicense();
 
-  AppSession createSession({SessionStore? store}) {
+  /// Every request URL the fake saw, in order — lets tests assert which host
+  /// the client actually talked to (runtime-address proof).
+  final List<Uri> requested = [];
+
+  AppSession createSession({SessionStore? store, ServerAddressStore? addressStore}) {
     final client = ApiClient(
       baseUrl: 'http://fake.test',
       httpClient: MockClient(_handle),
       authProvider: () => null,
     );
     final api = PosApi(client);
-    return AppSession(posApi: api, sessionStore: store ?? InMemorySessionStore());
+    return AppSession(posApi: api, sessionStore: store ?? InMemorySessionStore(), serverAddressStore: addressStore);
   }
 
   Future<http.Response> _handle(http.Request req) async {
+    requested.add(req.url);
     final path = req.url.path;
     switch (path) {
       case '/api/auth/pos-redeem':

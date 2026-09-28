@@ -6,6 +6,7 @@ import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
+import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
@@ -39,12 +40,19 @@ class _ShiftScreenState extends State<ShiftScreen> {
   /// Configured Bluetooth printers (PRD: opening shift shows the affected
   /// printers) and their honest status. Test Print stays MANUAL.
   final _bluetooth = BluetoothPrintTransport();
+  final _usb = UsbPrintTransport();
   final _btStatus = <String, PrinterLink>{};
+  final _usbStatus = <String, PrinterLink>{};
   String? _busyPrinterId;
 
   List<ClientPrinter> get _bluetoothPrinters => [
         for (final p in widget.session.printRouting?.printers ?? const <ClientPrinter>[])
           if (p.transport == 'BLUETOOTH') p,
+      ];
+
+  List<ClientPrinter> get _usbPrinters => [
+        for (final p in widget.session.printRouting?.printers ?? const <ClientPrinter>[])
+          if (p.transport == 'USB') p,
       ];
 
   Future<void> _checkBluetooth(ClientPrinter printer) async {
@@ -80,10 +88,41 @@ class _ShiftScreenState extends State<ShiftScreen> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${printer.name}: ${link.detail}')));
   }
 
-  /// The affected Bluetooth printers with a manual Test Print (never automatic).
+  Future<void> _checkUsb(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await PrinterHealthChecker().check(
+      transport: 'USB',
+      usbVidPid: printer.usbVidPid,
+      usbChip: printer.usbChip,
+    );
+    if (!mounted) return;
+    setState(() {
+      _usbStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+  }
+
+  Future<void> _testPrintUsb(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await _usb.testPrint(
+      vidPid: printer.usbVidPid,
+      chip: printer.usbChip,
+      widthMm: printer.widthMm,
+      printerName: printer.name,
+    );
+    if (!mounted) return;
+    setState(() {
+      _usbStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${printer.name}: ${link.detail}')));
+  }
+
+  /// The affected Bluetooth/USB printers with a manual Test Print (never automatic).
   List<Widget> _printerSection() {
     final printers = _bluetoothPrinters;
-    if (printers.isEmpty) return const [];
+    final usb = _usbPrinters;
+    if (printers.isEmpty && usb.isEmpty) return const [];
     return [
       const SizedBox(height: 24),
       const Text('Printers', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.petrol)),
@@ -98,6 +137,14 @@ class _ShiftScreenState extends State<ShiftScreen> {
           busy: _busyPrinterId == p.id,
           onCheck: () => _checkBluetooth(p),
           onTest: () => _testPrint(p),
+        ),
+      for (final p in usb)
+        UsbPrinterRow(
+          printer: p,
+          status: _usbStatus[p.id],
+          busy: _busyPrinterId == p.id,
+          onCheck: () => _checkUsb(p),
+          onTest: () => _testPrintUsb(p),
         ),
     ];
   }

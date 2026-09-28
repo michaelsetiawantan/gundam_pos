@@ -171,3 +171,36 @@ class InMemorySessionStore implements SessionStore {
   @override
   Future<void> clear() async => _ctx = null;
 }
+
+const _kServerAddress = 'gundam_server_base_url';
+
+/// Persists the operator-entered runtime server address. Lives in the SAME
+/// device secure storage as the activation state, so it survives restart.
+abstract class ServerAddressStore {
+  Future<String?> load();
+  Future<void> save(String address);
+}
+
+/// Production store backed by platform secure storage (Keychain / Keystore).
+class SecureServerAddressStore implements ServerAddressStore {
+  SecureServerAddressStore([FlutterSecureStorage? storage]) : _storage = storage ?? const FlutterSecureStorage();
+
+  final FlutterSecureStorage _storage;
+
+  @override
+  Future<String?> load() => _storage.read(key: _kServerAddress);
+
+  @override
+  Future<void> save(String address) => _storage.write(key: _kServerAddress, value: address);
+}
+
+/// In-memory fake for unit tests.
+class InMemoryServerAddressStore implements ServerAddressStore {
+  String? _value;
+
+  @override
+  Future<String?> load() async => _value;
+
+  @override
+  Future<void> save(String address) async => _value = address;
+}

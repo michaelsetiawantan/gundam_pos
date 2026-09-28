@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:gundam_pos/state/app_session.dart';
-import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
 /// P00 — Device activation. The user enters the exact 64-char server code
@@ -54,6 +53,8 @@ class _ActivationScreenState extends State<ActivationScreen> {
                       caption: 'Enter the activation code from your Operations Setup (POS Assets) to bind this tablet to an outlet.',
                     ),
                     ErrorBanner(message: s.lastError),
+                    ServerAddressField(session: s),
+                    const SizedBox(height: 16),
                     TextField(
                       controller: _code,
                       focusNode: _focus,
@@ -73,8 +74,6 @@ class _ActivationScreenState extends State<ActivationScreen> {
                     ),
                     const SizedBox(height: 8),
                     PrimaryButton(label: 'Activate', busy: s.busy, icon: Icons.verified_outlined, onPressed: _submit),
-                    const SizedBox(height: 20),
-                    _ServerHint(),
                   ],
                 ),
               ),
@@ -82,17 +81,6 @@ class _ActivationScreenState extends State<ActivationScreen> {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ServerHint extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return const Text(
-      'Connecting to the Gundam server configured at build time.',
-      style: TextStyle(color: PosTheme.slate, fontSize: 13),
-      textAlign: TextAlign.center,
     );
   }
 }

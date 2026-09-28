@@ -89,11 +89,11 @@ void main() {
       expect(rec.jobs, isEmpty);
     });
 
-    test('unsupported transport printer is reported and skipped', () async {
+    test('USB printer is wired on this build — the job reaches the transport', () async {
       final rec = RecordingTransport();
       final d = buildDispatcher(rec, outlet: {
         'printers': [
-          {'id': 'usb', 'name': 'USB Label', 'transport': 'USB', 'usbVidPid': '04b8:0e15'},
+          {'id': 'usb', 'name': 'USB Label', 'transport': 'USB', 'usbVidPid': '04b8:0e15', 'usbChip': 'CH340'},
         ],
         'routing': {
           'BILL': [
@@ -107,9 +107,11 @@ void main() {
         flow: flow(),
         split: split(),
       );
-      expect(rec.jobs, isEmpty);
-      expect(out.alerts.single, contains('USB'));
-      expect(d.unsupportedPrinters.single.id, 'usb');
+      expect(out.alerts, isEmpty);
+      expect(rec.jobs.single.printer.transport, 'USB');
+      expect(rec.jobs.single.printer.usbVidPid, '04b8:0e15');
+      expect(rec.jobs.single.printer.usbChip, 'CH340');
+      expect(d.unsupportedPrinters, isEmpty);
     });
 
     test('same-day reprint: bill reprints; captain reprints whole order without bev', () async {

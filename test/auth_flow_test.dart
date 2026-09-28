@@ -22,7 +22,7 @@ void main() {
     await tester.pumpWidget(_wrap(ActivationScreen(session: session)));
     expect(find.text('Activate this device'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextField), 'x' * 64);
+    await tester.enterText(find.widgetWithText(TextField, 'Activation code'), 'x' * 64);
     await tester.tap(find.text('Activate'));
     await tester.pumpAndSettle();
 
@@ -47,7 +47,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(LoginScreen(session: session)));
     await tester.enterText(find.widgetWithText(TextField, 'Email'), 'c@x.demo');
-    await tester.enterText(find.byType(TextField).last, 'Pass1234');
+    await tester.enterText(find.widgetWithText(TextField, 'Password'), 'Pass1234');
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
 
@@ -73,7 +73,7 @@ void main() {
 
     await tester.pumpWidget(_wrap(LoginScreen(session: session)));
     await tester.enterText(find.widgetWithText(TextField, 'Email'), 'c@x.demo');
-    await tester.enterText(find.byType(TextField).last, 'Pass1234');
+    await tester.enterText(find.widgetWithText(TextField, 'Password'), 'Pass1234');
     await tester.tap(find.text('Sign in'));
     await tester.pumpAndSettle();
 

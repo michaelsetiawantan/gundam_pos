@@ -4,15 +4,17 @@ import 'package:flutter/services.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
+import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
+import 'package:gundam_pos/ui/widgets.dart';
 
 /// P29/P32/P33/P34/P37 — More: sync status + pending push, config/media refresh
 /// (atomic via temp+rename, last-known-good on failure), printer health
-/// transport check + a MANUAL Test Print for a configured Bluetooth printer,
-/// client update stub, and sign-out (open tables are NOT a blocker; only real
-/// unsafe state warns).
+/// transport check + a MANUAL Test Print for a configured Bluetooth or USB
+/// printer, client update stub, and sign-out (open tables are NOT a blocker;
+/// only real unsafe state warns).
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key, required this.session});
 
@@ -25,11 +27,15 @@ class MoreScreen extends StatefulWidget {
 class _MoreScreenState extends State<MoreScreen> {
   final _printerHealth = PrinterHealthChecker();
   final _bluetooth = BluetoothPrintTransport();
+  final _usb = UsbPrintTransport();
   PrinterLink? _printerLink;
   final _printerIp = TextEditingController(text: _envPrinterHost);
 
   /// Honest per-printer Bluetooth status, keyed by printer id.
   final Map<String, PrinterLink> _btStatus = {};
+
+  /// Honest per-printer USB status, keyed by printer id.
+  final Map<String, PrinterLink> _usbStatus = {};
   String? _busyPrinterId;
 
   static const _envPrinterHost = String.fromEnvironment('POS_PRINTER_HOST', defaultValue: '');
@@ -96,6 +102,41 @@ class _MoreScreenState extends State<MoreScreen> {
     _toast('${printer.name}: ${link.detail}');
   }
 
+  List<ClientPrinter> get _usbPrinters =>
+      [for (final p in widget.session.printRouting?.printers ?? const <ClientPrinter>[]) if (p.transport == 'USB') p];
+
+  /// Manual test print only — the PRD forbids an automatic test per shift.
+  Future<void> _testPrintUsb(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await _usb.testPrint(
+      vidPid: printer.usbVidPid,
+      chip: printer.usbChip,
+      widthMm: printer.widthMm,
+      printerName: printer.name,
+    );
+    if (!mounted) return;
+    setState(() {
+      _usbStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    _toast('${printer.name}: ${link.detail}');
+  }
+
+  Future<void> _checkUsb(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await _printerHealth.check(
+      transport: 'USB',
+      usbVidPid: printer.usbVidPid,
+      usbChip: printer.usbChip,
+    );
+    if (!mounted) return;
+    setState(() {
+      _usbStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    _toast('${printer.name}: ${link.detail}');
+  }
+
   Future<void> _reportHealth() async {
     final ok = await widget.session.reportPrinterHealth();
     if (!mounted) return;
@@ -138,6 +179,18 @@ class _MoreScreenState extends State<MoreScreen> {
             padding: const EdgeInsets.all(20),
             children: [
               _Section(
+                icon: Icons.dns,
+                title: 'Server',
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _infoRow('In use', s.serverAddress),
+                  const SizedBox(height: 12),
+                  ServerAddressField(session: s, compact: true),
+                  const SizedBox(height: 8),
+                  const Text('Changing the server re-syncs the outlet config on the next refresh.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+                ]),
+              ),
+              _Section(
                 icon: Icons.sync,
                 title: 'Sync',
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -170,6 +223,20 @@ class _MoreScreenState extends State<MoreScreen> {
                         onCheck: () => _checkBluetooth(p),
                         onTest: () => _testPrint(p),
                       ),
+                  if (_usbPrinters.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text('USB printers (bridge chip built in)',
+                        style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol)),
+                    const SizedBox(height: 8),
+                    for (final p in _usbPrinters)
+                      UsbPrinterRow(
+                        printer: p,
+                        status: _usbStatus[p.id],
+                        busy: _busyPrinterId == p.id,
+                        onCheck: () => _checkUsb(p),
+                        onTest: () => _testPrintUsb(p),
+                      ),
+                  ],
                   const SizedBox(height: 12),
                   TextField(
                     controller: _printerIp,
@@ -186,7 +253,7 @@ class _MoreScreenState extends State<MoreScreen> {
                   const SizedBox(height: 12),
                   OutlinedButton(onPressed: _reportHealth, child: const Text('Report all printer health')),
                   const SizedBox(height: 8),
-                  const Text('Bluetooth prints over Classic SPP / ESC-POS. Test Print is manual only — never automatic. USB is not wired yet (reported as Unsupported).',
+                  const Text('Bluetooth prints over Classic SPP / ESC-POS. USB prints over Android USB Host (CDC-ACM / CH340 / PL2303 / FTDI drivers built in). Test Print is manual only — never automatic.',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                 ]),
               ),

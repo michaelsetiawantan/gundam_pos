@@ -6,9 +6,10 @@ library;
 import 'dart:io';
 
 import 'package:gundam_pos/services/bluetooth_printer_channel.dart';
+import 'package:gundam_pos/services/usb_printer_channel.dart';
 
 /// PRD §4.28 connection statuses. `permissionRequired` and `disconnected` are
-/// Bluetooth-specific additions to the original set.
+/// additions the Bluetooth and USB transports need beyond the original set.
 enum PrinterLinkState {
   ready,
   offline,
@@ -86,18 +87,26 @@ String printerHealthStatusName(PrinterLinkState state) {
 /// default talks to the Android platform channel; tests inject a fake.
 typedef BluetoothProbe = Future<PrinterLink> Function(String mac, bool supportsDeviceStatus);
 
+/// USB Host probe: host → device present (VID/PID or chip) → permission →
+/// interface/endpoint open. The default talks to the Android platform channel;
+/// tests inject a fake.
+typedef UsbProbe = Future<PrinterLink> Function(String vidPid, String chip, bool supportsDeviceStatus);
+
 class PrinterHealthChecker {
-  PrinterHealthChecker({Reachability? connect, BluetoothProbe? bluetooth})
+  PrinterHealthChecker({Reachability? connect, BluetoothProbe? bluetooth, UsbProbe? usb})
       : _connect = connect ?? _tcpProbe,
-        _bluetooth = bluetooth ?? defaultBluetoothProbe;
+        _bluetooth = bluetooth ?? defaultBluetoothProbe,
+        _usb = usb ?? defaultUsbProbe;
 
   final Reachability _connect;
   final BluetoothProbe _bluetooth;
+  final UsbProbe _usb;
 
   /// Check a printer by its configured transport.
   /// - NETWORK: TCP connect to host:port → ready (or offline).
   /// - BLUETOOTH: adapter/permission/bonded-MAC/RFCOMM-SPP (PRD §4.28).
-  /// - USB: not implemented on this build → unsupported.
+  /// - USB: Android USB Host — device present / permission / chip match /
+  ///   interface claim (PRD §4.28).
   /// If the printer model cannot surface real-time status, we mark the link
   /// `unknown` rather than claim healthy (PRD printer-health rule).
   Future<PrinterLink> check({
@@ -105,6 +114,8 @@ class PrinterHealthChecker {
     String? host,
     int port = 9100,
     String? bluetoothMac,
+    String? usbVidPid,
+    String? usbChip,
     bool supportsDeviceStatus = false,
   }) async {
     switch (transport.toUpperCase()) {
@@ -114,7 +125,10 @@ class PrinterHealthChecker {
         }
         return _bluetooth(bluetoothMac, supportsDeviceStatus);
       case 'USB':
-        return PrinterLink(PrinterLinkState.unsupported, detail: 'USB transport is not wired on this build yet.');
+        if ((usbVidPid == null || usbVidPid.isEmpty) && (usbChip == null || usbChip.isEmpty)) {
+          return PrinterLink(PrinterLinkState.offline, detail: 'No USB VID:PID or chip configured for this printer.');
+        }
+        return _usb(usbVidPid ?? '', usbChip ?? '', supportsDeviceStatus);
       case 'NETWORK':
       default:
         final reachable = host == null ? false : await _connect(host, port);
@@ -156,6 +170,79 @@ class PrinterHealthChecker {
       detail: supportsDeviceStatus
           ? '${conn.detail} Device status reported.'
           : '${conn.detail} Device status: Unknown.',
+    );
+  }
+
+  /// Real USB Host probe: host → device present (VID/PID or chip) → permission →
+  /// chip match → interface/endpoint open. Every stop is a typed [PrinterLink],
+  /// never an exception.
+  static Future<PrinterLink> defaultUsbProbe(String vidPid, String chip, bool supportsDeviceStatus) async {
+    final channel = UsbPrinterChannel();
+    final status = await channel.status();
+    if (status.state == 'unsupported') {
+      return PrinterLink(PrinterLinkState.unsupported, detail: status.detail);
+    }
+    final devices = await channel.listDevices();
+    final target = parseUsbVidPid(vidPid);
+    final configured = canonicalUsbChip(chip);
+
+    UsbDeviceInfo? dev;
+    if (target != null) {
+      for (final d in devices) {
+        if (d.vid == target.$1 && d.pid == target.$2) {
+          dev = d;
+          break;
+        }
+      }
+    } else if (configured != null) {
+      for (final d in devices) {
+        if (d.chip == configured) {
+          dev = d;
+          break;
+        }
+      }
+    } else {
+      for (final d in devices) {
+        if (d.chip.isNotEmpty) {
+          dev = d;
+          break;
+        }
+      }
+    }
+    if (dev == null) {
+      return PrinterLink(
+        PrinterLinkState.offline,
+        detail: 'Configured USB printer is not attached'
+            '${vidPid.isEmpty ? '' : ' ($vidPid)'}.',
+      );
+    }
+    if (!dev.granted) {
+      return PrinterLink(PrinterLinkState.permissionRequired, detail: 'USB permission has not been granted.');
+    }
+    final attached = dev.chip.isNotEmpty
+        ? dev.chip
+        : (usbChipForVidPid(dev.vid, dev.pid, cdcByClass: true) ?? '');
+    if (configured != null && attached != configured) {
+      return PrinterLink(
+        PrinterLinkState.unsupported,
+        detail: 'Configured chip $configured does not match the attached device '
+            '(${dev.vidPid}, ${attached.isEmpty ? 'unsupported chip' : attached}).',
+      );
+    }
+    final open = await channel.open(
+      vid: dev.vid,
+      pid: dev.pid,
+      chip: attached.isEmpty ? (configured ?? '') : attached,
+    );
+    if (!open.ok) {
+      return PrinterLink(printerLinkStateFromCode(open.state), detail: open.detail);
+    }
+    await channel.close(); // free the interface for the real print path
+    return PrinterLink(
+      PrinterLinkState.ready,
+      detail: supportsDeviceStatus
+          ? '${open.detail} Device status reported.'
+          : '${open.detail} Device status: Unknown.',
     );
   }
 

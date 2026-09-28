@@ -26,6 +26,8 @@ class PrintPrinter {
     this.port = 9100,
     this.transport = 'NETWORK',
     this.bluetoothMac,
+    this.usbVidPid,
+    this.usbChip,
     this.widthMm = 80,
     this.supportsRasterImage = false,
     this.dialect = kDefaultEscPosDialect,
@@ -38,6 +40,12 @@ class PrintPrinter {
   final int port;
   final String transport; // NETWORK | BLUETOOTH | USB
   final String? bluetoothMac; // BLUETOOTH SPP target (bonded device MAC)
+
+  /// USB addressing: the configured `VID:PID` and the bridge chip the web config
+  /// asks for (`CDC_ACM`|`CH340`|`PL2303`|`FTDI`, or null/`AUTO`). Both are null
+  /// on older payloads — the USB transport then derives the chip from the device.
+  final String? usbVidPid;
+  final String? usbChip;
   final int widthMm;
   final bool supportsRasterImage;
 
