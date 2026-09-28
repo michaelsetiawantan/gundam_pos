@@ -3,8 +3,12 @@ import 'package:flutter/services.dart';
 
 import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/services/bluetooth_print_transport.dart';
+import 'package:gundam_pos/services/print_routing.dart';
+import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
+import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
@@ -31,6 +35,72 @@ class _ShiftScreenState extends State<ShiftScreen> {
   /// The shift rules the POS currently runs on. Pinned to the config the
   /// running shift started with (config change applies next day only).
   ShiftGate get gate => widget.session.gateFor(widget.config);
+
+  /// Configured Bluetooth printers (PRD: opening shift shows the affected
+  /// printers) and their honest status. Test Print stays MANUAL.
+  final _bluetooth = BluetoothPrintTransport();
+  final _btStatus = <String, PrinterLink>{};
+  String? _busyPrinterId;
+
+  List<ClientPrinter> get _bluetoothPrinters => [
+        for (final p in widget.session.printRouting?.printers ?? const <ClientPrinter>[])
+          if (p.transport == 'BLUETOOTH') p,
+      ];
+
+  Future<void> _checkBluetooth(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await PrinterHealthChecker().check(transport: 'BLUETOOTH', bluetoothMac: printer.bluetoothMac);
+    if (!mounted) return;
+    setState(() {
+      _btStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+  }
+
+  Future<void> _testPrint(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    var link = await _bluetooth.testPrint(
+      mac: printer.bluetoothMac ?? '',
+      widthMm: printer.widthMm,
+      printerName: printer.name,
+    );
+    if (link.state == PrinterLinkState.permissionRequired) {
+      await _bluetooth.requestPermission();
+      link = await _bluetooth.testPrint(
+        mac: printer.bluetoothMac ?? '',
+        widthMm: printer.widthMm,
+        printerName: printer.name,
+      );
+    }
+    if (!mounted) return;
+    setState(() {
+      _btStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${printer.name}: ${link.detail}')));
+  }
+
+  /// The affected Bluetooth printers with a manual Test Print (never automatic).
+  List<Widget> _printerSection() {
+    final printers = _bluetoothPrinters;
+    if (printers.isEmpty) return const [];
+    return [
+      const SizedBox(height: 24),
+      const Text('Printers', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.petrol)),
+      const SizedBox(height: 4),
+      const Text('Manual Test Print only — never run automatically.',
+          style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+      const SizedBox(height: 10),
+      for (final p in printers)
+        BluetoothPrinterRow(
+          printer: p,
+          status: _btStatus[p.id],
+          busy: _busyPrinterId == p.id,
+          onCheck: () => _checkBluetooth(p),
+          onTest: () => _testPrint(p),
+        ),
+    ];
+  }
 
   @override
   void initState() {
@@ -74,6 +144,7 @@ class _ShiftScreenState extends State<ShiftScreen> {
             if (c.isClosed) return _closing(context);
             return ListView(padding: const EdgeInsets.all(20), children: [
               if (!c.isOpen) ..._openForm() else ..._activeCard(),
+              ..._printerSection(),
               if (c.error != null) ...[
                 const SizedBox(height: 12),
                 ErrorBanner(message: c.error),

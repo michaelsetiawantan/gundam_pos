@@ -27,14 +27,23 @@ TicketContext testContext({String type = 'BILL'}) => TicketContext(
     );
 
 /// A dispatcher wired from the Northstar print model onto a recording
-/// transport. The health probe is stubbed so tests never open a socket.
-PrintDispatcher buildDispatcher(RecordingTransport transport, {Map<String, dynamic>? outlet}) {
+/// transport. The health probes are stubbed so tests never open a socket or a
+/// platform channel.
+PrintDispatcher buildDispatcher(
+  RecordingTransport transport, {
+  Map<String, dynamic>? outlet,
+  BluetoothProbe? bluetooth,
+  PrintFormatStore? store,
+}) {
   final routing = PrinterRouting.parse(outlet ?? FakeBackend.northstarPrintModel());
-  final broker = PrintBroker(store: PrintFormatStore(), queue: PrintQueue(transport: transport));
+  final broker = PrintBroker(store: store ?? PrintFormatStore(), queue: PrintQueue(transport: transport));
   return PrintDispatcher(
     broker: broker,
     routing: routing,
     context: testContext(),
-    health: PrinterHealthChecker(connect: (host, port) async => false),
+    health: PrinterHealthChecker(
+      connect: (host, port) async => false,
+      bluetooth: bluetooth ?? (mac, supportsDeviceStatus) async => PrinterLink(PrinterLinkState.ready, detail: '$mac (test)'),
+    ),
   );
 }

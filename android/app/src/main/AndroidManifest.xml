@@ -1,4 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Bluetooth thermal printers (Classic SPP/RFCOMM).
+         Pre-Android-12: install-time BLUETOOTH/BLUETOOTH_ADMIN (capped at API 30
+         so Android 12+ uses the runtime permission instead).
+         Android 12+ (API 31): runtime BLUETOOTH_CONNECT, prompted before the
+         first connect. BLUETOOTH_SCAN is not required — we only talk to bonded
+         devices. USB host is intentionally NOT declared yet. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
     <application
         android:label="Gundam POS"
         android:name="${applicationName}"

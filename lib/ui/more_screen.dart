@@ -1,14 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:gundam_pos/services/bluetooth_print_transport.dart';
+import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/state/app_session.dart';
+import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
 
 /// P29/P32/P33/P34/P37 — More: sync status + pending push, config/media refresh
 /// (atomic via temp+rename, last-known-good on failure), printer health
-/// transport check, client update stub, and sign-out (open tables are NOT a
-/// blocker; only real unsafe state warns).
+/// transport check + a MANUAL Test Print for a configured Bluetooth printer,
+/// client update stub, and sign-out (open tables are NOT a blocker; only real
+/// unsafe state warns).
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key, required this.session});
 
@@ -20,8 +24,13 @@ class MoreScreen extends StatefulWidget {
 
 class _MoreScreenState extends State<MoreScreen> {
   final _printerHealth = PrinterHealthChecker();
+  final _bluetooth = BluetoothPrintTransport();
   PrinterLink? _printerLink;
   final _printerIp = TextEditingController(text: _envPrinterHost);
+
+  /// Honest per-printer Bluetooth status, keyed by printer id.
+  final Map<String, PrinterLink> _btStatus = {};
+  String? _busyPrinterId;
 
   static const _envPrinterHost = String.fromEnvironment('POS_PRINTER_HOST', defaultValue: '');
 
@@ -50,6 +59,47 @@ class _MoreScreenState extends State<MoreScreen> {
     if (!mounted) return;
     setState(() => _printerLink = link);
     _toast(link.detail);
+  }
+
+  List<ClientPrinter> get _bluetoothPrinters =>
+      [for (final p in widget.session.printRouting?.printers ?? const <ClientPrinter>[]) if (p.transport == 'BLUETOOTH') p];
+
+  /// Manual test print only — the PRD forbids an automatic test per shift.
+  Future<void> _testPrint(ClientPrinter printer) async {
+    final mac = printer.bluetoothMac;
+    setState(() => _busyPrinterId = printer.id);
+    var link = await _bluetooth.testPrint(mac: mac ?? '', widthMm: printer.widthMm, printerName: printer.name);
+    // A missing runtime permission is recoverable: prompt once, then retry.
+    if (link.state == PrinterLinkState.permissionRequired) {
+      await _bluetooth.requestPermission();
+      link = await _bluetooth.testPrint(mac: mac ?? '', widthMm: printer.widthMm, printerName: printer.name);
+    }
+    if (!mounted) return;
+    setState(() {
+      _btStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    _toast('${printer.name}: ${link.detail}');
+  }
+
+  Future<void> _checkBluetooth(ClientPrinter printer) async {
+    setState(() => _busyPrinterId = printer.id);
+    final link = await _printerHealth.check(
+      transport: 'BLUETOOTH',
+      bluetoothMac: printer.bluetoothMac,
+    );
+    if (!mounted) return;
+    setState(() {
+      _btStatus[printer.id] = link;
+      _busyPrinterId = null;
+    });
+    _toast('${printer.name}: ${link.detail}');
+  }
+
+  Future<void> _reportHealth() async {
+    final ok = await widget.session.reportPrinterHealth();
+    if (!mounted) return;
+    _toast(ok ? 'Printer health reported to the server.' : 'Nothing to report (no printer routing synced).');
   }
 
   void _checkUpdate() {
@@ -108,6 +158,19 @@ class _MoreScreenState extends State<MoreScreen> {
                 icon: Icons.local_printshop,
                 title: 'Printer health',
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  if (_bluetoothPrinters.isEmpty)
+                    const Text('No Bluetooth printer configured for this outlet.',
+                        style: TextStyle(color: PosTheme.slate, fontSize: 12))
+                  else
+                    for (final p in _bluetoothPrinters)
+                      BluetoothPrinterRow(
+                        printer: p,
+                        status: _btStatus[p.id],
+                        busy: _busyPrinterId == p.id,
+                        onCheck: () => _checkBluetooth(p),
+                        onTest: () => _testPrint(p),
+                      ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: _printerIp,
                     keyboardType: TextInputType.number,
@@ -115,13 +178,15 @@ class _MoreScreenState extends State<MoreScreen> {
                     decoration: const InputDecoration(labelText: 'Network printer (host:port)'),
                   ),
                   const SizedBox(height: 12),
-                  OutlinedButton(onPressed: _checkPrinter, child: const Text('Test connection')),
+                  OutlinedButton(onPressed: _checkPrinter, child: const Text('Test network connection')),
                   if (_printerLink != null) ...[
                     const SizedBox(height: 12),
-                    _PrinterResult(link: _printerLink!),
+                    PrinterResultCard(link: _printerLink!),
                   ],
+                  const SizedBox(height: 12),
+                  OutlinedButton(onPressed: _reportHealth, child: const Text('Report all printer health')),
                   const SizedBox(height: 8),
-                  const Text('Bluetooth & USB transport checks are stubbed on this build (reported as Unsupported).',
+                  const Text('Bluetooth prints over Classic SPP / ESC-POS. Test Print is manual only — never automatic. USB is not wired yet (reported as Unsupported).',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                 ]),
               ),
@@ -159,6 +224,7 @@ class _MoreScreenState extends State<MoreScreen> {
       );
 }
 
+/// One configured Bluetooth printer: honest status + a manual Test Print.
 class _Section extends StatelessWidget {
   const _Section({required this.icon, required this.title, required this.child});
   final IconData icon;
@@ -179,34 +245,6 @@ class _Section extends StatelessWidget {
         ]),
         const SizedBox(height: 14),
         child,
-      ]),
-    );
-  }
-}
-
-class _PrinterResult extends StatelessWidget {
-  const _PrinterResult({required this.link});
-  final PrinterLink link;
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, label) = switch (link.state) {
-      PrinterLinkState.ready => (PosTheme.ok, 'Ready'),
-      PrinterLinkState.offline => (PosTheme.danger, 'Offline'),
-      PrinterLinkState.unsupported => (PosTheme.warn, 'Unsupported'),
-      PrinterLinkState.notPaired => (PosTheme.warn, 'Not paired'),
-      PrinterLinkState.bluetoothOff => (PosTheme.warn, 'Bluetooth off'),
-      PrinterLinkState.unknown => (PosTheme.slate, 'Device status: Unknown'),
-    };
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(10)),
-      child: Row(children: [
-        Icon(Icons.circle, color: color, size: 12),
-        const SizedBox(width: 8),
-        Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w700)),
-        const SizedBox(width: 8),
-        Expanded(child: Text(link.detail, style: const TextStyle(color: PosTheme.slate, fontSize: 12))),
       ]),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gundam_pos/data/print_format_store.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/print_payload.dart';
@@ -92,11 +93,11 @@ void main() {
       final rec = RecordingTransport();
       final d = buildDispatcher(rec, outlet: {
         'printers': [
-          {'id': 'bt', 'name': 'BT Label', 'transport': 'BLUETOOTH', 'bluetoothMac': 'AA:BB'},
+          {'id': 'usb', 'name': 'USB Label', 'transport': 'USB', 'usbVidPid': '04b8:0e15'},
         ],
         'routing': {
           'BILL': [
-            {'printerId': 'bt'},
+            {'printerId': 'usb'},
           ],
         },
       });
@@ -107,8 +108,8 @@ void main() {
         split: split(),
       );
       expect(rec.jobs, isEmpty);
-      expect(out.alerts.single, contains('BLUETOOTH'));
-      expect(d.unsupportedPrinters.single.id, 'bt');
+      expect(out.alerts.single, contains('USB'));
+      expect(d.unsupportedPrinters.single.id, 'usb');
     });
 
     test('same-day reprint: bill reprints; captain reprints whole order without bev', () async {
@@ -209,12 +210,92 @@ void main() {
   });
 
   group('PrinterHealthChecker surface stays honest', () {
-    test('BLUETOOTH is unsupported; an unreachable NETWORK printer is offline', () async {
+    test('BLUETOOTH probes the SPP link; an unreachable NETWORK printer is offline', () async {
       final rec = RecordingTransport();
       final d = buildDispatcher(rec);
       final links = await d.checkHealth();
-      expect(links['pr-bt']!.state, PrinterLinkState.unsupported);
+      // pr-bt is a Bluetooth printer: the probe reports its SPP link (stubbed ready).
+      expect(links['pr-bt']!.state, PrinterLinkState.ready);
       expect(links['pr-front']!.state, PrinterLinkState.offline);
+    });
+
+    test('USB stays unsupported on this build', () async {
+      final rec = RecordingTransport();
+      final d = buildDispatcher(rec, outlet: {
+        'printers': [
+          {'id': 'usb', 'name': 'USB', 'transport': 'USB', 'usbVidPid': '04b8:0e15'},
+        ],
+      });
+      final links = await d.checkHealth();
+      expect(links['usb']!.state, PrinterLinkState.unsupported);
+    });
+  });
+
+  group('printer-model dialect + raster are reported, not guessed', () {
+    money.MoneyFlow flow() => money.computeMoneyFlow(
+          [money.MoneyLine(subtotal: 45000, vatMode: money.VatScMode.exclude, vatRate: 11, scMode: money.VatScMode.none)],
+          0,
+          0,
+          money.RoundingMode.none,
+        );
+    money.SplitResult split() => money.finalizePayments(flow().total, [
+          money.PaymentInput(outletMethodId: 'pm-cash', type: money.PayType.cash, amount: flow().total),
+        ]);
+
+    test('unknown protocol → an alert naming the dialect, job still prints', () async {
+      final rec = RecordingTransport();
+      final d = buildDispatcher(rec, outlet: {
+        'printers': [
+          {'id': 'p', 'name': 'Odd', 'transport': 'NETWORK', 'ip': '1.1.1.1', 'protocol': 'ZPL'},
+        ],
+        'routing': {
+          'BILL': [
+            {'printerId': 'p'},
+          ],
+        },
+      });
+      final out = await d.printBill(
+        items: [PrintItem(name: 'Nasi', itemId: 'item-nasi', qty: 1, unitPrice: 45000, batchIndex: 0)],
+        receiptId: 'R-1',
+        flow: flow(),
+        split: split(),
+      );
+      expect(out.printed, hasLength(1)); // never blocked by an unknown dialect
+      expect(out.alerts.any((a) => a.contains('ZPL')), isTrue);
+      expect(out.alerts.any((a) => a.contains('default ESC/POS')), isTrue);
+    });
+
+    test('an IMAGE block on a non-raster printer is reported as skipped', () async {
+      final store = PrintFormatStore();
+      store.apply({
+        'formats': [
+          {
+            'formatId': 'f-img', 'name': 'Img Bill', 'ticketType': 'BILL', 'version': 1, 'widthMm': 80,
+            'blocks': [
+              {'id': 'a', 'type': 'TEXT', 'text': 'RECEIPT'},
+              {'id': 'b', 'type': 'IMAGE', 'assetKey': 'logo'},
+            ],
+          },
+        ],
+      });
+      final rec = RecordingTransport();
+      final d = buildDispatcher(rec, store: store, outlet: {
+        'printers': [
+          {'id': 'p', 'name': 'Plain', 'transport': 'NETWORK', 'ip': '1.1.1.1', 'supportsRasterImage': false},
+        ],
+        'routing': {
+          'BILL': [
+            {'printerId': 'p'},
+          ],
+        },
+      });
+      final out = await d.printBill(
+        items: [PrintItem(name: 'Nasi', itemId: 'item-nasi', qty: 1, unitPrice: 45000, batchIndex: 0)],
+        receiptId: 'R-1',
+        flow: flow(),
+        split: split(),
+      );
+      expect(out.alerts.any((a) => a.contains('raster support')), isTrue);
     });
   });
 }

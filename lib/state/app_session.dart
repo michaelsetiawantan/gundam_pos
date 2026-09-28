@@ -13,9 +13,12 @@ import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/models/license_info.dart';
+import 'package:gundam_pos/services/bluetooth_print_transport.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/services/print_dispatcher.dart';
 import 'package:gundam_pos/services/print_routing.dart';
+import 'package:gundam_pos/services/printer_health.dart';
+import 'package:gundam_pos/services/printer_health_report.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
@@ -34,12 +37,14 @@ class AppSession extends ChangeNotifier {
     PushStore? pushStore,
     DateTime Function()? now,
     PrintTransport? printTransport,
+    PrinterHealthReporter? printerHealthReporter,
   })  : _posApi = posApi,
         _store = sessionStore,
         _receipts = ReceiptSequencer(store: receiptSequence ?? MemoryReceiptSequenceStore()),
         _push = pushStore ?? MemoryPushStore(),
         _now = now ?? DateTime.now,
-        _printTransport = printTransport ?? const NetworkPrintTransport();
+        _printTransport = printTransport ?? _defaultPrintTransport(),
+        _healthReporter = printerHealthReporter;
 
   final PosApi _posApi;
   final SessionStore _store;
@@ -47,6 +52,35 @@ class AppSession extends ChangeNotifier {
   final PushStore _push;
   final DateTime Function() _now;
   final PrintTransport _printTransport;
+
+  /// Default real transports: network :9100 + Classic Bluetooth SPP. USB stays
+  /// unsupported until the USB-host path is implemented.
+  static PrintTransport _defaultPrintTransport() => PrintTransportRouter({
+        'NETWORK': const NetworkPrintTransport(),
+        'BLUETOOTH': BluetoothPrintTransport(),
+      });
+
+  final PrinterHealthReporter? _healthReporter;
+
+  /// Probe every active printer and report the honest per-printer status to the
+  /// server (`POST /api/pos/printers/health`). Best-effort: never throws, never
+  /// blocks a sale; a missing reporter / routing skips the upload.
+  Future<bool> reportPrinterHealth() async {
+    final reporter = _healthReporter;
+    final dispatcher = _printDispatcher;
+    final tenantId = ctx.tenantId;
+    final assetId = ctx.deviceId;
+    if (reporter == null || dispatcher == null || tenantId == null || assetId == null) return false;
+    final links = await dispatcher.checkHealth();
+    if (links.isEmpty) return false;
+    return reporter.report(
+      tenantId: tenantId,
+      assetId: assetId,
+      statusesByPrinterId: {
+        for (final e in links.entries) e.key: printerHealthStatusName(e.value.state),
+      },
+    );
+  }
 
   PosContext ctx = const PosContext();
   PosStage stage = PosStage.checking;
@@ -266,6 +300,10 @@ class AppSession extends ChangeNotifier {
       try {
         await refreshConfig();
       } catch (_) {}
+      // Report printer health after config lands (PRD: check at login). Best-effort.
+      try {
+        await reportPrinterHealth();
+      } catch (_) {}
       return true;
     } on PosApiException catch (e) {
       lastError = _loginError(e);
@@ -473,6 +511,7 @@ class AppDependencies {
       sessionStore: st,
       receiptSequence: posStore,
       pushStore: posStore,
+      printerHealthReporter: PrinterHealthReporter(client: client),
     );
     ref[0] = session;
     return session;

@@ -11,12 +11,12 @@
 ///      (PRD §4.32: attempt `retryCount` times, `retryTimeoutSec` each).
 library;
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:gundam_pos/data/print_format_store.dart';
 import 'package:gundam_pos/logic/print_format.dart';
 import 'package:gundam_pos/logic/print_format_render.dart';
+import 'package:gundam_pos/services/escpos.dart';
 
 /// Transport descriptor for one printer (subset of the server `Printer`).
 class PrintPrinter {
@@ -25,8 +25,10 @@ class PrintPrinter {
     this.host,
     this.port = 9100,
     this.transport = 'NETWORK',
+    this.bluetoothMac,
     this.widthMm = 80,
     this.supportsRasterImage = false,
+    this.dialect = kDefaultEscPosDialect,
     this.retryCount = 3,
     this.retryTimeoutSec = 20,
   });
@@ -35,8 +37,13 @@ class PrintPrinter {
   final String? host;
   final int port;
   final String transport; // NETWORK | BLUETOOTH | USB
+  final String? bluetoothMac; // BLUETOOTH SPP target (bonded device MAC)
   final int widthMm;
   final bool supportsRasterImage;
+
+  /// Effective ESC/POS dialect (canonicalised). Only the default is encoded
+  /// today; an unknown value still prints with the default and is reported.
+  final String dialect;
   final int retryCount;
   final int retryTimeoutSec;
 }
@@ -78,7 +85,7 @@ abstract class PrintTransport {
   Future<void> send(PrintJob job);
 }
 
-/// TCP :9100 transport (network printers) — plain-text/ESC-POS-safe bytes.
+/// TCP :9100 transport (network printers) — real ESC/POS bytes.
 class NetworkPrintTransport implements PrintTransport {
   const NetworkPrintTransport();
 
@@ -100,23 +107,24 @@ class NetworkPrintTransport implements PrintTransport {
     }
   }
 
-  /// Text lines, then a text stand-in per QR/BARCODE/IMAGE entry, then feed+cut.
-  /// ponytail: no raster/QR encoder dependency — graphics render as labelled
-  /// text until an ESC/POS encoder is added.
-  List<int> _bytes(PrintJob job) {
-    final out = <int>[];
-    for (final l in job.lines) {
-      out
-        ..addAll(utf8.encode(l))
-        ..add(0x0A);
+  /// Real ESC/POS encoding (shared with the Bluetooth transport).
+  List<int> _bytes(PrintJob job) => encodePrintJob(job);
+}
+
+/// Dispatches a job to the transport bound to its printer type. The queue keeps
+/// a single transport; this lets NETWORK and BLUETOOTH share one queue.
+class PrintTransportRouter implements PrintTransport {
+  const PrintTransportRouter(this.byTransport);
+
+  final Map<String, PrintTransport> byTransport;
+
+  @override
+  Future<void> send(PrintJob job) {
+    final transport = byTransport[job.printer.transport];
+    if (transport == null) {
+      throw UnsupportedError('${job.printer.transport} transport not wired on this build');
     }
-    for (final e in job.entries) {
-      out
-        ..addAll(utf8.encode('[${e.kind.name.toUpperCase()}] ${e.content}'))
-        ..add(0x0A);
-    }
-    out.addAll(const [0x1B, 0x64, 0x03, 0x1D, 0x56, 0x00]); // feed 3 + cut
-    return out;
+    return transport.send(job);
   }
 }
 

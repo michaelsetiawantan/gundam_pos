@@ -15,20 +15,29 @@ library;
 
 import 'dart:convert';
 
+import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 
 /// Transports the model understands. Anything else is skipped on parse.
 const Set<String> kKnownPrintTransports = {'NETWORK', 'BLUETOOTH', 'USB'};
 
-/// Transports this build can actually write bytes to. Only raw TCP :9100 is
-/// wired today; the rest must be reported as unsupported, never faked.
-const Set<String> kSupportedPrintTransports = {'NETWORK'};
+/// Transports this build can actually write bytes to: raw TCP :9100 and Classic
+/// Bluetooth SPP (via the platform channel). USB is still reported as
+/// unsupported, never faked.
+const Set<String> kSupportedPrintTransports = {'NETWORK', 'BLUETOOTH'};
 
 bool isTransportKnown(String transport) => kKnownPrintTransports.contains(transport.toUpperCase());
 
 bool isTransportSupported(String transport) => kSupportedPrintTransports.contains(transport.toUpperCase());
 
 /// One printer as synced from the outlet config.
+///
+/// Optional printer-model metadata (a parallel server change) is consumed
+/// tolerantly: `modelId`, `brand`, `model`, `protocol`/`dialect`, and the
+/// model's `supportsRasterImage`. The same keys are also accepted nested under a
+/// `printerModel` (or a `model` object). When absent (older payloads) the
+/// printer behaves exactly as before: default ESC/POS dialect and its own raster
+/// flag.
 class ClientPrinter {
   const ClientPrinter({
     required this.id,
@@ -45,6 +54,11 @@ class ClientPrinter {
     this.active = true,
     this.retryCount = 3,
     this.retryTimeoutSec = 20,
+    this.modelId,
+    this.brand,
+    this.model,
+    this.protocol,
+    this.modelSupportsRasterImage,
   });
 
   /// null → skipped (no id, or a transport the model does not know).
@@ -53,6 +67,13 @@ class ClientPrinter {
     if (id.isEmpty) return null;
     final transport = ((j['transport'] as String?) ?? 'NETWORK').toUpperCase();
     if (!isTransportKnown(transport)) return null;
+    // Model metadata may be flat or nested under `printerModel` / a `model` map.
+    final nestedModel = j['printerModel'] is Map
+        ? Map<String, dynamic>.from(j['printerModel'] as Map)
+        : const <String, dynamic>{};
+    final nestedLegacy = j['model'] is Map
+        ? Map<String, dynamic>.from(j['model'] as Map)
+        : const <String, dynamic>{};
     return ClientPrinter(
       id: id,
       name: (j['name'] as String?) ?? id,
@@ -60,14 +81,23 @@ class ClientPrinter {
       transport: transport,
       ip: j['ip'] as String?,
       port: _int(j['port']) ?? 9100,
-      bluetoothMac: j['bluetoothMac'] as String?,
-      usbVidPid: j['usbVidPid'] as String?,
+      bluetoothMac: _str(j['bluetoothMac']),
+      usbVidPid: _str(j['usbVidPid']),
       widthMm: _int(j['widthMm']) ?? 80,
       supportsRasterImage: (j['supportsRasterImage'] as bool?) ?? false,
       shared: (j['shared'] as bool?) ?? false,
       active: (j['active'] as bool?) ?? true,
       retryCount: _int(j['retryCount']) ?? 3,
       retryTimeoutSec: _int(j['retryTimeoutSec']) ?? 20,
+      modelId: _str(j['modelId'] ?? nestedModel['id'] ?? nestedLegacy['id']),
+      brand: _str(j['brand'] ?? nestedModel['brand'] ?? nestedLegacy['brand']),
+      model: _str(j['model'] is String
+          ? j['model']
+          : (nestedModel['name'] ?? nestedLegacy['name'] ?? nestedLegacy['model'])),
+      protocol: _str(j['protocol'] ?? j['dialect'] ?? nestedModel['protocol'] ?? nestedLegacy['protocol']),
+      modelSupportsRasterImage: _bool(
+        j['modelSupportsRasterImage'] ?? nestedModel['supportsRasterImage'] ?? nestedLegacy['supportsRasterImage'],
+      ),
     );
   }
 
@@ -82,6 +112,13 @@ class ClientPrinter {
   final int widthMm;
   final bool supportsRasterImage;
 
+  /// Optional printer-model identity + dialect (absent on older payloads).
+  final String? modelId;
+  final String? brand;
+  final String? model;
+  final String? protocol;
+  final bool? modelSupportsRasterImage;
+
   /// A shared printer may be used by any device on the outlet.
   final bool shared;
   final bool active;
@@ -90,14 +127,27 @@ class ClientPrinter {
 
   bool get supported => isTransportSupported(transport);
 
-  /// The broker's transport descriptor. Only NETWORK carries a host today.
+  /// Canonical ESC/POS dialect chosen from the printer/model `protocol`. No
+  /// `protocol` → the documented default; an unrecognised value is kept so the
+  /// alert path can report it (printing still uses the default).
+  String get dialect => normalizeDialect(protocol);
+
+  bool get dialectRecognized => isKnownDialect(dialect);
+
+  /// Effective raster capability: the printer's own flag OR the model's.
+  bool get effectiveRasterSupport => supportsRasterImage || (modelSupportsRasterImage ?? false);
+
+  /// The broker's transport descriptor. NETWORK carries a host; BLUETOOTH
+  /// carries the bonded device MAC.
   PrintPrinter toPrintPrinter() => PrintPrinter(
         name: name,
         host: ip,
         port: port,
         transport: transport,
+        bluetoothMac: bluetoothMac,
         widthMm: widthMm,
-        supportsRasterImage: supportsRasterImage,
+        supportsRasterImage: effectiveRasterSupport,
+        dialect: dialect,
         retryCount: retryCount,
         retryTimeoutSec: retryTimeoutSec,
       );
@@ -250,3 +300,7 @@ int? _int(Object? v) {
   if (v is String) return int.tryParse(v);
   return null;
 }
+
+String? _str(Object? v) => v == null ? null : (v is String ? v : v.toString());
+
+bool? _bool(Object? v) => v is bool ? v : null;

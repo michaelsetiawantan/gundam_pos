@@ -6,12 +6,14 @@
 /// queue. It NEVER throws and NEVER blocks a sale: a missing printer or an
 /// unsupported transport becomes an honest [PrintOutcome.alerts] entry instead.
 ///
-/// Transports: only NETWORK :9100 writes bytes on this build. A BLUETOOTH/USB
-/// printer is reported as unsupported, never pretended.
+/// Transports: NETWORK :9100 and Classic Bluetooth SPP write bytes on this
+/// build. A USB printer is reported as unsupported, never pretended.
 library;
 
 import 'package:gundam_pos/logic/money.dart' as money;
+import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/logic/print_payload.dart';
+import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
@@ -83,7 +85,12 @@ class PrintDispatcher {
   Future<Map<String, PrinterLink>> checkHealth() async {
     final out = <String, PrinterLink>{};
     for (final p in routing.activePrinters) {
-      out[p.id] = await _health.check(transport: p.transport, host: p.ip, port: p.port);
+      out[p.id] = await _health.check(
+        transport: p.transport,
+        host: p.ip,
+        port: p.port,
+        bluetoothMac: p.bluetoothMac,
+      );
     }
     return out;
   }
@@ -259,6 +266,12 @@ class PrintDispatcher {
         alerts.add("Printer '${p.name}' uses ${p.transport}, which this build cannot print to — skipped.");
         continue;
       }
+      // Honest reporting: an unrecognised dialect still prints with the default.
+      if (!p.dialectRecognized) {
+        alerts.add(
+          "Printer '${p.name}' reports protocol '${p.protocol}' — unknown; using the default $kDefaultEscPosDialect dialect.",
+        );
+      }
       try {
         final rendered = await broker.printTicket(
           ticketType: ticketType,
@@ -267,6 +280,11 @@ class PrintDispatcher {
           widthMm: p.widthMm,
         );
         printed.add(rendered);
+        // IMAGE blocks need raster support; report when they were skipped.
+        final images = rendered.entries.where((e) => e.kind == PrintableKind.image).length;
+        if (images > 0 && !p.effectiveRasterSupport) {
+          alerts.add("Printer '${p.name}' has no raster support — $images image block(s) skipped.");
+        }
       } catch (e) {
         alerts.add("Printer '${p.name}' failed: $e");
       }

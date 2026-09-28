@@ -30,10 +30,19 @@ void main() {
       expect(link.isUsable, isFalse);
     });
 
-    test('bluetooth & usb → unsupported on this build', () async {
+    test('bluetooth without a MAC → not paired; usb → unsupported on this build', () async {
       final c = checker(reachable: true);
-      expect((await c.check(transport: 'BLUETOOTH')).state, PrinterLinkState.unsupported);
+      expect((await c.check(transport: 'BLUETOOTH')).state, PrinterLinkState.notPaired);
       expect((await c.check(transport: 'USB')).state, PrinterLinkState.unsupported);
+    });
+
+    test('bluetooth with a MAC probes the SPP link (injected)', () async {
+      final c = PrinterHealthChecker(
+        bluetooth: (mac, _) async => PrinterLink(PrinterLinkState.permissionRequired, detail: 'denied'),
+      );
+      final link = await c.check(transport: 'BLUETOOTH', bluetoothMac: 'AA:BB:CC:DD:EE:FF');
+      expect(link.state, PrinterLinkState.permissionRequired);
+      expect(link.isUsable, isFalse);
     });
   });
 
