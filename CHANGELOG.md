@@ -72,10 +72,19 @@ kerangka MVP (versi 0.1.0) tanpa konfigurasi printer, tanpa update, dan tanpa lo
 - Ikon launcher & splash sendiri (tile petrol/teal dengan mark "G"), adaptive icon Android 8+,
   nama app "Gundam POS" (sebelumnya ikon bawaan Flutter).
 
+### Update & rilis (baru)
+- **Versi aplikasi & changelog**: halaman About menampilkan version, versionCode, git sha + build time,
+  versi schema DB, dan alamat server yang dipakai.
+- **Cek versi baru** saat login dan tiap sync → notifikasi "New version vX.Y available" beserta
+  changelog dan flag mandatory. Belum ada rilis = diam (tidak nag), offline = tidak memblokir kasir.
+- **Update in-place**: download APK → verifikasi **SHA-256** (kalau tidak cocok, install DITOLAK) →
+  install lewat FileProvider. Data lokal (DB + config) tetap karena install in-place.
+- Server punya **registry rilis + changelog** (`/app/pos-releases`) dan endpoint publik
+  `GET /api/pos/version.json`; publish wajib menyertakan sha256 dan changelog.
+
 ### Belum ada di versi ini
 - Dialect `STAR` dan `CITIZEN` dideklarasikan tapi belum diimplementasi (dipilih → fallback ESC/POS
   dan dilaporkan).
 - Blok gambar/raster pada struk masih placeholder berlabel (butuh rasteriser).
 - Sequence init chip USB belum diverifikasi di hardware nyata (baru review + unit test).
 - Reprint bill hanya same-day, cache in-memory.
-- Self-update APK (download + verifikasi SHA-256 + install in-place) sedang dikerjakan.
