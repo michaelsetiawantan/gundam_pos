@@ -131,6 +131,13 @@ class PosApi {
         if (qty != null) 'qty': qty,
       });
 
+  // -------------------------------------------------------------- version --
+  /// Public release manifest (`GET /api/pos/version.json`, no auth). Used by the
+  /// tablet's update check; an honest empty body means "no release published",
+  /// never an update.
+  Future<Map<String, dynamic>> versionInfo() =>
+      _client.get('/api/pos/version.json', auth: false);
+
   // ---------------------------------------------------------------- config --
   Future<Map<String, dynamic>> configState(String tenantId) =>
       _client.get('/api/pos/config/state', query: {'tenantId': tenantId});

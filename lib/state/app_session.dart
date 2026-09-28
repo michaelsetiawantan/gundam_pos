@@ -12,6 +12,7 @@ import 'package:gundam_pos/data/print_log_store.dart';
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
+import 'package:gundam_pos/models/app_release.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/models/license_info.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
@@ -23,6 +24,7 @@ import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/printer_health_report.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
+import 'package:gundam_pos/state/release_store.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
 import 'package:path_provider/path_provider.dart';
@@ -37,6 +39,7 @@ class AppSession extends ChangeNotifier {
     required PosApi posApi,
     required SessionStore sessionStore,
     ServerAddressStore? serverAddressStore,
+    ReleaseInfoStore? releaseStore,
     ReceiptSequenceStore? receiptSequence,
     PushStore? pushStore,
     DateTime Function()? now,
@@ -46,6 +49,7 @@ class AppSession extends ChangeNotifier {
   })  : _posApi = posApi,
         _store = sessionStore,
         _addrStore = serverAddressStore ?? InMemoryServerAddressStore(),
+        _releaseStore = releaseStore ?? InMemoryReleaseInfoStore(),
         _receipts = ReceiptSequencer(store: receiptSequence ?? MemoryReceiptSequenceStore()),
         _push = pushStore ?? MemoryPushStore(),
         _now = now ?? DateTime.now,
@@ -56,6 +60,7 @@ class AppSession extends ChangeNotifier {
   final PosApi _posApi;
   final SessionStore _store;
   final ServerAddressStore _addrStore;
+  final ReleaseInfoStore _releaseStore;
   final ReceiptSequencer _receipts;
   final PushStore _push;
   final DateTime Function() _now;
@@ -114,6 +119,26 @@ class AppSession extends ChangeNotifier {
   /// Null until the first login response. Never blocks a session — the hard lock
   /// is enforced server-side; this only drives the informational reminder.
   LicenseInfo? license;
+
+  // ---------------------------------------------------- client version/update -
+  /// This build's identity (version name + versionCode + local DB schema).
+  final AppVersion appVersion = AppVersion.running(schemaVersion: schemaVersion);
+
+  /// Last release manifest the server advertised (persisted across restarts) —
+  /// drives "what's new" on the About screen. Null = never seen.
+  ReleaseInfo? lastRelease;
+
+  /// Set only by the most recent SUCCESSFUL check: a newer releaseCode than this
+  /// build. An unpublished release or a failed fetch never arms it (no nagging).
+  bool updateOffered = false;
+
+  DateTime? lastUpdateCheckedAt;
+
+  /// Honest record of the last fetch failure (offline, 404, malformed). Never
+  /// surfaced as a blocking error — the cashier must not notice a dead network.
+  String? lastUpdateCheckError;
+
+  bool get updateAvailable => updateOffered && lastRelease != null && lastRelease!.versionCode > appVersion.versionCode;
 
   /// Memoised dismissal for the licence reminder. Cleared on login, so a new
   /// licence state / coverage end / day re-arms it.
@@ -310,6 +335,12 @@ class AppSession extends ChangeNotifier {
     // Apply the persisted runtime server address (if any) before any call.
     serverAddress = resolveBaseUrl(runtime: await _addrStore.load());
     _posApi.baseUrl = serverAddress;
+    // Last release the server advertised (drives "what's new" after a restart).
+    try {
+      lastRelease = await _releaseStore.load();
+    } catch (_) {
+      lastRelease = null;
+    }
     _stageFromContext();
     notifyListeners();
   }
@@ -428,12 +459,50 @@ class AppSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ---------------------------------------------------------------- update --
+  /// PRD 4.33a: check the server's `version.json` on login and on every config
+  /// sync, and compare the advertised versionCode with this build's.
+  ///
+  /// Never throws and never blocks: an unpublished release, a malformed payload
+  /// and a failed fetch all leave [updateAvailable] false. A failure is recorded
+  /// honestly in [lastUpdateCheckError] (shown on the About screen) — the
+  /// tablet is never nagged about a release it cannot see.
+  Future<void> checkForUpdate() async {
+    try {
+      final res = await _posApi.versionInfo();
+      // The manifest may be returned flat or nested under `release`.
+      final raw = res['release'] is Map ? res['release'] : (res['version'] == null && res['data'] is Map ? res['data'] : res);
+      final release = ReleaseInfo.parse(raw);
+      lastUpdateCheckedAt = _now();
+      lastUpdateCheckError = null;
+      if (release == null) {
+        // Honest empty shape ("no release published") — say nothing, never an update.
+        updateOffered = false;
+      } else {
+        lastRelease = release;
+        updateOffered = release.isNewerThan(appVersion.versionCode);
+        try {
+          await _releaseStore.save(release);
+        } catch (_) {/* keep the in-memory copy */}
+      }
+    } catch (e) {
+      lastUpdateCheckedAt = _now();
+      lastUpdateCheckError = e is PosApiException ? 'server error ${e.status} (${e.code})' : 'unreachable ($e)';
+      updateOffered = false;
+    }
+    notifyListeners();
+  }
+
   // ---------------------------------------------------------------- config --
   Future<bool> refreshConfig() async {
     if (syncing) return false;
     syncing = true;
     notifyListeners();
     try {
+      // PRD 4.33a: the version.json check rides every config sync, which is also
+      // what a login triggers (login → refreshConfig). Best-effort, silent on
+      // failure, and never blocks the cashier.
+      await checkForUpdate();
       final tenantId = ctx.tenantId!;
       final state = await _posApi.configState(tenantId);
       final vs = state['versions'] as Map<String, dynamic>? ?? const {};
@@ -604,6 +673,7 @@ class AppDependencies {
       posApi: PosApi(client),
       sessionStore: st,
       serverAddressStore: addressStore ?? SecureServerAddressStore(),
+      releaseStore: SecureReleaseInfoStore(),
       receiptSequence: posStore,
       pushStore: posStore,
       printLogStore: printLogStore,

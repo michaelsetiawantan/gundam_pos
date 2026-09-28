@@ -73,7 +73,13 @@ void main() {
     expect(find.text('Client update'), findsOneWidget);
 
     // Refresh pulls the Northstar config via the fake backend.
-    await tester.scrollUntilVisible(find.text('Refresh config'), -300, scrollable: find.byType(Scrollable).first);
+    // Drag until the button is built, then ensureVisible positions it fully —
+    // a fixed scroll delta can park it under the app bar when sections grow.
+    final scrollable = find.byType(Scrollable).first;
+    await tester.dragUntilVisible(find.text('Refresh config'), scrollable, const Offset(0, 200));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Refresh config'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Refresh config'));
     await tester.pumpAndSettle();
     expect(session.config, isNotNull);

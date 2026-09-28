@@ -4,8 +4,10 @@ import 'package:flutter/services.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
+import 'package:gundam_pos/services/update_service.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
+import 'package:gundam_pos/ui/about_screen.dart';
 import 'package:gundam_pos/ui/print_diagnostics_screen.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
@@ -14,12 +16,16 @@ import 'package:gundam_pos/ui/widgets.dart';
 /// P29/P32/P33/P34/P37 — More: sync status + pending push, config/media refresh
 /// (atomic via temp+rename, last-known-good on failure), printer health
 /// transport check + a MANUAL Test Print for a configured Bluetooth or USB
-/// printer, client update stub, and sign-out (open tables are NOT a blocker;
-/// only real unsafe state warns).
+/// printer, the client update notice (version identity + changelog, install on
+/// the About screen), and sign-out (open tables are NOT a blocker; only real
+/// unsafe state warns).
 class MoreScreen extends StatefulWidget {
-  const MoreScreen({super.key, required this.session});
+  const MoreScreen({super.key, required this.session, this.installer});
 
   final AppSession session;
+
+  /// Injectable APK bridge, forwarded to the About screen (tests).
+  final ApkInstallBridge? installer;
 
   @override
   State<MoreScreen> createState() => _MoreScreenState();
@@ -151,9 +157,24 @@ class _MoreScreenState extends State<MoreScreen> {
     _toast(ok ? 'Printer health reported to the server.' : 'Nothing to report (no printer routing synced).');
   }
 
-  void _checkUpdate() {
-    _toast('v0.1.0 — APK updates are manual via the server upgrade notifier (SOP: SHA-256 verify + in-place install).');
+  /// Manual, user-confirmed update check (the PRD's automatic check rides the
+  /// config sync; this button is the operator's on-demand view).
+  Future<void> _checkUpdate() async {
+    await widget.session.checkForUpdate();
+    if (!mounted) return;
+    final s = widget.session;
+    _toast(s.updateAvailable
+        ? 'New version v${s.lastRelease!.version} available.'
+        : s.lastUpdateCheckError != null
+            ? 'Update check failed — staying silent (no new release confirmed).'
+            : 'No newer release published by the server.');
   }
+
+  void _openAbout() => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => AboutScreen(session: widget.session, installer: widget.installer),
+        ),
+      );
 
   Future<void> _signOut() async {
     final ok = await showDialog<bool>(
@@ -286,9 +307,27 @@ class _MoreScreenState extends State<MoreScreen> {
                 icon: Icons.system_update,
                 title: 'Client update',
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Current version: v0.1.0', style: TextStyle(color: PosTheme.slate)),
+                  _infoRow('Installed', s.appVersion.display),
+                  _infoRow('Schema version', '${s.appVersion.schemaVersion}'),
                   const SizedBox(height: 12),
-                  OutlinedButton(onPressed: _checkUpdate, child: const Text('Check for update')),
+                  if (s.updateAvailable && s.lastRelease != null)
+                    UpdateNoticeCard(release: s.lastRelease!)
+                  else
+                    Text(
+                      s.lastUpdateCheckError != null
+                          ? 'Update check failed — recorded honestly on About, never shown to the cashier.'
+                          : 'No newer release offered by the server.',
+                      style: const TextStyle(color: PosTheme.slate, fontSize: 12),
+                    ),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    OutlinedButton(onPressed: _checkUpdate, child: const Text('Check for update')),
+                    const SizedBox(width: 12),
+                    OutlinedButton(onPressed: _openAbout, child: const Text('Version & updates')),
+                  ]),
+                  const SizedBox(height: 8),
+                  const Text('APK upgrade = manual, user-confirmed, SHA-256 verified in-place install. Config deltas stay automatic.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                 ]),
               ),
               _Section(

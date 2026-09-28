@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Gundam POS talks to a server the OPERATOR types in at activation/login, so the host is not known
+  when the APK is built and cannot be expressed as a static domain allowlist.
+
+  Policy:
+  - cleartextTrafficPermitted=true is required for LAN / VPN deployments served over plain HTTP
+    (this is also the transport the session cookie Secure flag has to be relaxed for - see
+    docs/runbook.md, COOKIE_SECURE).
+  - user-added CAs are NOT trusted; only system CAs, so a normal HTTPS deployment still validates
+    against the public CA set and TLS failures surface as "TLS/certificate failure" on the login
+    screen instead of being silently accepted.
+
+  When the product moves to a single cloud host over HTTPS, replace this with an explicit
+  domain-config allowlist and set cleartextTrafficPermitted=false.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

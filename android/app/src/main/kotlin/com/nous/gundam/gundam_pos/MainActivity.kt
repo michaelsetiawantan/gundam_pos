@@ -7,6 +7,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var bluetooth: BluetoothPrinterChannel? = null
     private var usb: UsbPrinterChannel? = null
+    private var apk: ApkInstallChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -20,6 +21,13 @@ class MainActivity : FlutterActivity() {
         usb = usbChannel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, UsbPrinterChannel.CHANNEL)
             .setMethodCallHandler(usbChannel)
+
+        // In-place APK upgrade (PRD 4.33a): FileProvider content URI to the
+        // system package installer. The Dart side verifies the SHA-256 first.
+        val apkChannel = ApkInstallChannel(this)
+        apk = apkChannel
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, ApkInstallChannel.CHANNEL)
+            .setMethodCallHandler(apkChannel)
     }
 
     override fun onRequestPermissionsResult(

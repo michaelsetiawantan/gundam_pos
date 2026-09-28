@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths for the in-place APK upgrade (PRD 4.33a). The APK is
+     staged in app storage; only the staged directory is shared, and only with
+     the system package installer via a grant-read content URI. -->
+<paths>
+    <files-path name="apk" path="apk/" />
+    <cache-path name="cache" path="." />
+</paths>

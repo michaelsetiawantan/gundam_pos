@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/state/app_session.dart';
+import 'package:gundam_pos/state/release_store.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -36,6 +37,38 @@ class FakeBackend {
   /// `openedAt` the fake order-create route returns. Defaults to now; set it to
   /// simulate a pre-midnight hanging order.
   DateTime? openOrderOpenedAt;
+
+  /// Body served for `GET /api/pos/version.json`. Default = the server's honest
+  /// empty shape ("no release published"), which must NOT read as an update.
+  Map<String, dynamic> versionJson = const {};
+
+  /// When set, the version.json route answers this status instead (fetch-failure
+  /// tests: an offline/misconfigured server must stay silent).
+  int? versionStatus;
+
+  /// A published-release manifest in the server's shape
+  /// `{version, versionCode, apk_url, sha256, min_supported_config, mandatory,
+  /// changelog, released_at}`.
+  static Map<String, dynamic> release({
+    String version = '0.3.0',
+    int versionCode = 3,
+    String apkUrl = 'https://pos.example/gundam-pos-0.3.0.apk',
+    String sha256 = '',
+    int? minSupportedConfig,
+    bool mandatory = false,
+    String changelog = 'Faster order entry; fixed the shift recap window.',
+    String? releasedAt,
+  }) =>
+      {
+        'version': version,
+        'versionCode': versionCode,
+        'apk_url': apkUrl,
+        'sha256': sha256,
+        if (minSupportedConfig != null) 'min_supported_config': minSupportedConfig,
+        'mandatory': mandatory,
+        'changelog': changelog,
+        if (releasedAt != null) 'released_at': releasedAt,
+      };
 
   final _serverVersions = <String, int>{};
 
@@ -170,14 +203,23 @@ class FakeBackend {
   /// the client actually talked to (runtime-address proof).
   final List<Uri> requested = [];
 
-  AppSession createSession({SessionStore? store, ServerAddressStore? addressStore}) {
+  AppSession createSession({
+    SessionStore? store,
+    ServerAddressStore? addressStore,
+    ReleaseInfoStore? releaseStore,
+  }) {
     final client = ApiClient(
       baseUrl: 'http://fake.test',
       httpClient: MockClient(_handle),
       authProvider: () => null,
     );
     final api = PosApi(client);
-    return AppSession(posApi: api, sessionStore: store ?? InMemorySessionStore(), serverAddressStore: addressStore);
+    return AppSession(
+      posApi: api,
+      sessionStore: store ?? InMemorySessionStore(),
+      serverAddressStore: addressStore,
+      releaseStore: releaseStore,
+    );
   }
 
   Future<http.Response> _handle(http.Request req) async {
@@ -206,6 +248,9 @@ class FakeBackend {
             });
       case '/api/auth/logout':
         return _json(200, {'ok': true});
+      case '/api/pos/version.json':
+        if (versionStatus != null) return _json(versionStatus!, {'error': 'unavailable'});
+        return _json(200, versionJson);
       case '/api/pos/print-logs':
         final body = jsonDecode(req.body) as Map<String, dynamic>;
         lastPrintLogsBody = body;
