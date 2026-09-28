@@ -49,6 +49,30 @@ flutter build apk --release --dart-define=POS_API_BASE=http://<IP-SERVER>:3100
 Cek IP host: `hostname -I`. Kalau tablet di jaringan lain, ganti `10.80.88.20` dengan IP publik/VPN
 yang menembus port 3100.
 
+## Vocabulary printer (driver ada di APK, web hanya memilih)
+
+Semua pilihan di bawah berasal dari satu registry (`GET /api/printers/vocabulary`) dan dipakai
+sebagai *trigger*: APK sudah memuat drivernya, web hanya menunjuk yang mana.
+
+| Kategori | Pilihan | Status di APK |
+|---|---|---|
+| Transport | `NETWORK`, `BLUETOOTH`, `USB` | semua jalan |
+| USB driver/chip | `CDC_ACM`, `CH340_CH341`, `PL2303`, `FTDI_FT232R`, `FTDI_FT231X`, `CP210X`, `USB_PRINTER_CLASS` (class 0x07), `USB_VENDOR_SPECIFIC` (0xFF) | 8/8 ada di APK |
+| Dialect | `ESC/POS` (Epson), `ESC/POS-CLONE` (clone: init/cut/code page beda) | jalan |
+| Dialect | `STAR`, `CITIZEN` | belum diimplementasi — dipilih → fallback ESC/POS + dilaporkan |
+| Code page | `CP437`, `KATAKANA`, `CP850`, `CP860`, `CP863`, `CP865`, `CP1252`, `CP866`, `CP852`, `CP858` | jalan (index `ESC t n` asli) |
+| Code page | `UTF-8` | ditolak jujur → fallback CP437 + warning (ESC/POS tidak punya page UTF-8) |
+| Capability | `NATIVE_QR`, `NATIVE_BARCODE`, `CUTTER` | jalan, bisa di-override per printer model |
+| Capability | `RASTER_IMAGE` | belum (butuh rasteriser/dependency) — blok gambar jadi placeholder berlabel |
+| Width | 58 mm (32 cell), 80 mm (48 cell) | jalan |
+
+Ejaan lama tetap diterima sebagai alias (`ESC/POS-GENERIC`, `STAR-LINE-MODE`, `CITIZEN-ESCPOS`,
+`WPC1252`), jadi config yang sudah tersimpan tidak pernah rusak.
+
+Drift antara web dan APK dijaga oleh test: `pos/tool/printer-vocabulary.json` di-generate dari
+registry Dart, dan vitest di web membandingkan vocabulary server dengan file itu.
+Regenerate manifest: `cd pos && UPDATE_PRINTER_VOCABULARY=1 flutter test test/printer_vocabulary_test.dart`
+
 ## Printer
 
 - **Network :9100** — jalan (bytes dikirim langsung ke printer LAN).
