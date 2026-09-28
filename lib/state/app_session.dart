@@ -7,8 +7,10 @@ import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/data/config_cache.dart';
 import 'package:gundam_pos/data/local_db.dart';
 import 'package:gundam_pos/data/pos_store.dart';
+import 'package:gundam_pos/data/print_format_store.dart';
 import 'package:gundam_pos/logic/sync_planner.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/session_store.dart';
 import 'package:path_provider/path_provider.dart';
@@ -51,6 +53,16 @@ class AppSession extends ChangeNotifier {
   int get pendingPushCount => _push.count;
 
   ConfigCache? _configCache;
+
+  /// Published print formats for this outlet (last-known-good). Fed from the
+  /// FORMAT config domain on each sync; read by the print path.
+  final PrintFormatStore printFormats = PrintFormatStore();
+
+  PrintBroker? _printBroker;
+  PrintBroker? get printBroker => _printBroker;
+
+  /// Wire the print path (queue + transport) once the device printer is known.
+  void attachPrintBroker(PrintBroker broker) => _printBroker = broker;
 
   /// Shared, persisted (device-side) receipt sequencer for the settle flow.
   ReceiptSequencer get receipts => _receipts;
@@ -218,6 +230,12 @@ class AppSession extends ChangeNotifier {
         final master = full['MASTER'] as Map<String, dynamic>? ?? const {};
         final outlet = full['OUTLET'] as Map<String, dynamic>? ?? const {};
         config = TenantConfig.fromSyncPayloads(master, outlet);
+        // Published print formats ride the FORMAT domain; applied defensively
+        // (a bad payload keeps last-known-good and the built-in fallback holds).
+        final formatDomain = full['FORMAT'];
+        if (formatDomain != null) {
+          printFormats.apply(formatDomain, version: serverVersions['FORMAT'] ?? 0);
+        }
         final applied = <String, int>{...deviceVersions};
         for (final d in plan.needsFull) {
           final v = serverVersions[d] ?? 0;

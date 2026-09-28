@@ -1,6 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gundam_pos/logic/cart.dart';
+import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/print_format.dart';
 import 'package:gundam_pos/logic/print_format_render.dart';
+import 'package:gundam_pos/logic/print_payload.dart';
 
 /// Build a format from a block list (helper for the cases).
 PrintFormat fmt(List<Map<String, dynamic>> blocks, {int widthMm = 80, String type = 'BILL'}) =>
@@ -355,6 +358,54 @@ void main() {
       );
       expect(r.lines.every((l) => l.length <= 32), isTrue);
       expect(r.entries.single.content, 'NSTAR-POS1-20260928-14:05-0000001');
+    });
+  });
+
+  group('renderer consumes TicketPayloadBuilder output (wiring, not a re-test)', () {
+    final cartLine = CartLine(
+      itemId: 'i1',
+      name: 'Flat White',
+      sku: 'S',
+      qty: 2,
+      priceLevelIndex: 0,
+      unitPrice: 38000,
+      vatMode: money.VatScMode.exclude,
+    );
+    final flow = money.computeMoneyFlow(
+      [money.MoneyLine(subtotal: cartLine.lineSubtotal, vatMode: money.VatScMode.exclude, vatRate: 10, scMode: money.VatScMode.none)],
+      0,
+      0,
+      money.RoundingMode.none,
+    );
+    final split = money.finalizePayments(flow.total, [
+      money.PaymentInput(outletMethodId: 'pm-cash', type: money.PayType.cash, amount: 100000),
+    ]);
+    final payload = const TicketPayloadBuilder().bill(
+      ctx: TicketContext(storeName: 'NSC', cashier: 'Rina', tableName: 'A1', at: DateTime(2026, 9, 28, 10, 0)),
+      items: [PrintItem.fromCartLine(cartLine)],
+      receiptId: 'NSC-20260928-10:00-0000001',
+      flow: flow,
+      split: split,
+    );
+
+    test('builder money tokens drive MONEY_LINES (short-key aliases)', () {
+      final r = render([
+        {'id': 'm', 'type': 'MONEY_LINES', 'lines': ['SUBTOTAL', 'VAT', 'TOTAL', 'PAID', 'CHANGE']},
+      ], payload);
+      final joined = r.lines.join('\n');
+      expect(joined, matches(RegExp('Total\\s+${flow.total.toStringAsFixed(2)}')));
+      expect(joined, matches(RegExp('VAT\\s+${flow.vatAmount.toStringAsFixed(2)}')));
+      expect(joined, contains('Change'));
+    });
+
+    test('builder item rows drive ITEM_LIST with the price level kept on the row', () {
+      final r = render([
+        {'id': 'i', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE'},
+      ], payload);
+      expect(r.lines.single, contains('Flat White'));
+      expect(r.lines.single, contains('76000.00'));
+      final items = payload['items'] as List;
+      expect((items.single as Map)['priceLevelIndex'], 0);
     });
   });
 }

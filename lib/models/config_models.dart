@@ -353,9 +353,9 @@ class TenantConfig {
             ?.map((e) => PriceLevel.fromJson(e as Map<String, dynamic>))
             .toList() ??
         const <PriceLevel>[];
-    // Discount/voucher masters (tenant MASTER domain). Tolerant: the server
-    // does not yet ship these keys → empty lists. ASSUMED keys: `discounts`
-    // and `vouchers` on the MASTER payload (finding, see task report).
+    // Discount/voucher masters (tenant MASTER domain). Real server keys are
+    // `discounts` and `vouchers` (web/lib/config/resync.ts buildFull MASTER).
+    // Tolerant: a missing key → empty list, never throws.
     final discounts = (master['discounts'] as List?)
             ?.map((e) => DiscountMaster.fromJson(e as Map<String, dynamic>))
             .toList() ??

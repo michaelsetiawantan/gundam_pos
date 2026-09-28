@@ -179,47 +179,47 @@ void main() {
       expect(c.availableVouchers, isEmpty);
     });
 
-    test('discount applies before tax and changes the rounding delta', () {
+    test('discount applies before tax and changes the rounding delta', () async {
       final config = _config(discounts: [_discountJson(id: 'd-fixed', value: 300, tags: [_tag('cat-bev')])]);
       final c = _ctrl(_espressoCart(), config);
       expect(c.availableDiscounts.map((d) => d.id), ['d-fixed']);
 
-      c.applyDiscount(c.availableDiscounts.single);
+      expect(await c.applyDiscount(c.availableDiscounts.single), isTrue);
       expect(c.discountAmount, 300);
       // 25000 − 300 + 2750 VAT = 27450; rem 450 < 500 → no round-up (delta 0).
       expect(c.payable, 27450);
     });
 
-    test('percentage discount applies to the pre-tax subtotal', () {
+    test('percentage discount applies to the pre-tax subtotal', () async {
       final config = _config(discounts: [_discountJson(id: 'd-pct', kind: 'PERCENTAGE', value: 10, tags: [_tag('cat-bev')])]);
       final c = _ctrl(_espressoCart(), config);
-      c.applyDiscount(c.availableDiscounts.single);
+      expect(await c.applyDiscount(c.availableDiscounts.single), isTrue);
       expect(c.discountAmount, 2500);
       // 25000 − 2500 + 2750 = 25250; rem 250 < 500 → no round-up.
       expect(c.payable, 25250);
     });
 
-    test('applying a voucher replaces the discount (one-per-bill)', () {
+    test('applying a voucher replaces the discount (one-per-bill)', () async {
       final config = _config(
         discounts: [_discountJson(id: 'd-fixed', value: 300, tags: [_tag('cat-bev')])],
         vouchers: [_voucherJson(id: 'v-fixed', value: 10000, tags: [_tag('cat-bev')])],
       );
       final c = _ctrl(_espressoCart(), config);
-      c.applyDiscount(c.availableDiscounts.single);
+      expect(await c.applyDiscount(c.availableDiscounts.single), isTrue);
       expect(c.payable, 27450);
-      c.applyVoucher(c.availableVouchers.single);
+      expect(await c.applyVoucher(c.availableVouchers.single), isTrue);
       expect(c.appliedDiscount, isNull);
       expect(c.appliedVoucher?.id, 'v-fixed');
       // 25000 − 10000 + 2750 = 17750 → rem 750 ≥ 500 → 18000.
       expect(c.payable, 18000);
     });
 
-    test('cancel restores the original payable', () {
+    test('cancel restores the original payable', () async {
       final config = _config(discounts: [_discountJson(id: 'd-fixed', value: 300, tags: [_tag('cat-bev')])]);
       final c = _ctrl(_espressoCart(), config);
-      c.applyDiscount(c.availableDiscounts.single);
+      expect(await c.applyDiscount(c.availableDiscounts.single), isTrue);
       expect(c.payable, 27450);
-      c.cancelPricing();
+      expect(await c.cancelPricing(), isTrue);
       expect(c.appliedDiscount, isNull);
       expect(c.appliedVoucher, isNull);
       expect(c.discountAmount, 0);
@@ -230,7 +230,7 @@ void main() {
       final config = _config(discounts: [_discountJson(id: 'd-fixed', value: 300, tags: [_tag('cat-bev')])]);
       final c = _ctrl(_espressoCart(), config);
       final cash = config.paymentMethods.firstWhere((m) => m.type == money.PayType.cash);
-      c.applyDiscount(c.availableDiscounts.single);
+      expect(await c.applyDiscount(c.availableDiscounts.single), isTrue);
       c.addPayment(cash, c.payable); // exactly the discounted payable
       expect(c.covered, isTrue);
       expect(c.payable, 27450);

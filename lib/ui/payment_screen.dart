@@ -187,7 +187,7 @@ class _PricingPanel extends StatelessWidget {
     final vm = c.appliedVoucher;
     final discounts = c.availableDiscounts;
     final vouchers = c.availableVouchers;
-    if (dm == null && vm == null && discounts.isEmpty && vouchers.isEmpty) {
+    if (dm == null && vm == null && discounts.isEmpty && vouchers.isEmpty && !c.pricingPending) {
       return const SizedBox.shrink();
     }
     return Container(
@@ -201,6 +201,18 @@ class _PricingPanel extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('Discount / Voucher', style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol, fontSize: 15)),
         const SizedBox(height: 10),
+        if (c.pricingPending)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 10),
+            child: Row(children: [
+              Icon(Icons.hourglass_top, size: 18, color: PosTheme.slate),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text('Awaiting approval — no discount applied yet.',
+                    style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.slate)),
+              ),
+            ]),
+          ),
         if (dm != null || vm != null)
           Row(children: [
             Expanded(
@@ -213,11 +225,11 @@ class _PricingPanel extends StatelessWidget {
             const SizedBox(width: 8),
             IconButton(
               tooltip: 'Cancel discount/voucher',
-              onPressed: c.cancelPricing,
+              onPressed: c.pricingBusy ? null : () => _run(context, c, c.cancelPricing),
               icon: const Icon(Icons.close, color: PosTheme.danger),
             ),
           ])
-        else ...[
+        else if (!c.pricingPending) ...[
           if (discounts.isNotEmpty) ...[
             const Text('Discounts', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
             const SizedBox(height: 6),
@@ -225,7 +237,7 @@ class _PricingPanel extends StatelessWidget {
               for (final d in discounts)
                 ActionChip(
                   label: Text('${d.name} (${_label(d)})'),
-                  onPressed: () => c.applyDiscount(d),
+                  onPressed: c.pricingBusy ? null : () => _run(context, c, () => c.applyDiscount(d)),
                 ),
             ]),
             const SizedBox(height: 10),
@@ -237,12 +249,21 @@ class _PricingPanel extends StatelessWidget {
               for (final v in vouchers)
                 ActionChip(
                   label: Text('${v.name} (${_label(v)})'),
-                  onPressed: () => c.applyVoucher(v),
+                  onPressed: c.pricingBusy ? null : () => _run(context, c, () => c.applyVoucher(v)),
                 ),
             ]),
           ],
         ],
       ]),
+    );
+  }
+
+  /// Runs a server-backed pricing action; surfaces a readable message on failure.
+  static Future<void> _run(BuildContext context, PaymentController c, Future<bool> Function() action) async {
+    final ok = await action();
+    if (!context.mounted || ok) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(c.error ?? 'Could not change the discount/voucher.')),
     );
   }
 

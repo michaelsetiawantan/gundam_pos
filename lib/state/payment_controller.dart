@@ -39,9 +39,16 @@ class PaymentController extends ChangeNotifier {
 
   final List<money.PaymentInput> payments = [];
 
-  /// At most ONE discount OR ONE voucher per bill (mutually exclusive). Empty
-  /// until the cashier picks one; the server re-validates and is authoritative.
+  /// Server-confirmed pricing choice: at most ONE discount OR ONE voucher per
+  /// bill. Never set locally — applying or clearing goes through POST
+  /// /api/pos/orders/[id]/pricing and this holds exactly what the SERVER
+  /// returned (empty while an approval is pending).
   dv.PricingSelection pricing = dv.PricingSelection.none;
+
+  /// True while a below-threshold choice is queued: the bill is AWAITING
+  /// APPROVAL and no discount/voucher is applied yet.
+  bool pricingPending = false;
+  bool pricingBusy = false;
 
   /// Result of the last successful split (pay/change/tips). Null while unpaid.
   money.SplitResult? split;
@@ -100,22 +107,104 @@ class PaymentController extends ChangeNotifier {
         parentById: config.categoryParentId,
       );
 
-  /// Apply a discount — replaces any applied voucher (one-per-bill).
-  void applyDiscount(dv.DiscountMaster d) {
-    pricing = pricing.applyDiscount(d);
-    _recompute();
+  /// Propose applying a discount — the SERVER re-validates and decides. False
+  /// (with [error] set) if the server rejected it.
+  Future<bool> applyDiscount(dv.DiscountMaster d) => _setChoice(discountId: d.id);
+
+  /// Propose applying a voucher — the SERVER re-validates and decides.
+  Future<bool> applyVoucher(dv.VoucherMaster v) => _setChoice(voucherId: v.id);
+
+  /// Clear the bill's discount/voucher through the server (ids sent null).
+  Future<bool> cancelPricing() => _setChoice();
+
+  /// Tablet proposes; server decides. A below-threshold caller gets a PENDING
+  /// approval — the bill shows awaiting approval and nothing is applied locally.
+  /// On success we ADOPT the server's ids (never a locally computed amount).
+  Future<bool> _setChoice({String? discountId, String? voucherId}) async {
+    pricingBusy = true;
+    pricingPending = false;
+    error = null;
+    notifyListeners();
+    try {
+      final r = await posApi.setPricing(orderId, discountId: discountId, voucherId: voucherId);
+      if (r['approval'] != null) {
+        pricing = dv.PricingSelection.none;
+        pricingPending = true;
+      } else {
+        final o = r['order'] as Map<String, dynamic>? ?? const {};
+        _adoptServerChoice(o['discountId'] as String?, o['voucherId'] as String?);
+      }
+      _recompute();
+      return true;
+    } on PosApiException catch (e) {
+      error = _pricingMessage(e);
+      notifyListeners();
+      return false;
+    } on PosNetworkException {
+      error = 'No network — discount/voucher not changed.';
+      notifyListeners();
+      return false;
+    } finally {
+      pricingBusy = false;
+      notifyListeners();
+    }
   }
 
-  /// Apply a voucher — replaces any applied discount (one-per-bill).
-  void applyVoucher(dv.VoucherMaster v) {
-    pricing = pricing.applyVoucher(v);
-    _recompute();
+  /// Adopt the server's authoritative choice: map the confirmed id back to the
+  /// server-shipped config master. Any locally computed amount is discarded —
+  /// display and settle money-flow derive from this, mirroring the server.
+  void _adoptServerChoice(String? discountId, String? voucherId) {
+    if (discountId != null) {
+      final d = _discountById(discountId);
+      pricing = d == null ? dv.PricingSelection.none : dv.PricingSelection(discount: d);
+    } else if (voucherId != null) {
+      final v = _voucherById(voucherId);
+      pricing = v == null ? dv.PricingSelection.none : dv.PricingSelection(voucher: v);
+    } else {
+      pricing = dv.PricingSelection.none;
+    }
   }
 
-  /// Cancel the applied discount/voucher (distinct from cancelling the order).
-  void cancelPricing() {
-    pricing = pricing.cleared();
-    _recompute();
+  dv.DiscountMaster? _discountById(String id) {
+    for (final d in config.discounts) {
+      if (d.id == id) return d;
+    }
+    return null;
+  }
+
+  dv.VoucherMaster? _voucherById(String id) {
+    for (final v in config.vouchers) {
+      if (v.id == id) return v;
+    }
+    return null;
+  }
+
+  /// Readable message for each server pricing error code.
+  String _pricingMessage(PosApiException e) {
+    switch (e.code) {
+      case 'discount_expired':
+      case 'voucher_expired':
+        return 'That discount or voucher has expired.';
+      case 'discount_inactive':
+      case 'voucher_inactive':
+        return 'That discount or voucher is no longer active.';
+      case 'voucher_exhausted':
+        return 'That voucher has no uses left.';
+      case 'discount_not_eligible':
+      case 'voucher_not_eligible':
+        return 'That discount or voucher does not apply to the items on this bill.';
+      case 'discount_and_voucher_mutually_exclusive':
+        return 'A bill can have only one discount OR one voucher.';
+      case 'discount_not_found':
+      case 'voucher_not_found':
+        return 'That discount or voucher is no longer available.';
+      case 'order_closed':
+        return 'This bill is already closed.';
+      default:
+        return e.isRateLimited
+            ? 'Too many attempts. Wait and retry.'
+            : 'Could not change the discount/voucher (${e.code}).';
+    }
   }
 
   double get paid => money.round2(payments.fold<double>(0, (s, p) => s + p.amount));

@@ -80,6 +80,24 @@ class PosApi {
   Future<Map<String, dynamic>> sendCart(String orderId) =>
       _client.post('/api/pos/orders/$orderId/send-cart', body: {});
 
+  /// Set or clear the bill's discount OR voucher (one-per-bill). The tablet only
+  /// PROPOSES ids; the SERVER re-validates active/expiry/quota/category-eligibility
+  /// and decides. Returns `{order:{discountId,voucherId}}` when applied directly,
+  /// or `{approval:{approvalId,status}}` when the caller is below the approval
+  /// threshold (queued PENDING, nothing applied yet). `{discountId:null,
+  /// voucherId:null}` clears the choice. Never carries an amount.
+  Future<Map<String, dynamic>> setPricing(
+    String orderId, {
+    String? discountId,
+    String? voucherId,
+    String? reason,
+  }) =>
+      _client.post('/api/pos/orders/$orderId/pricing', body: {
+        'discountId': discountId,
+        'voucherId': voucherId,
+        if (reason != null) 'reason': reason,
+      });
+
   Future<Map<String, dynamic>> settle(
     String orderId, {
     required List<Map<String, dynamic>> payments,

@@ -17,6 +17,15 @@ class FakeBackend {
   (String, int)? loginError; // e.g. ('session_active_other_device', 409)
   Map<String, dynamic>? loginBody;
 
+  /// Pricing route controls (POST /api/pos/orders/[id]/pricing):
+  /// [pricingPending] → below-threshold `{approval:{...}}`; [pricingError] →
+  /// `{error:code}`; otherwise the applied `{order:{discountId,voucherId}}`.
+  bool pricingPending = false;
+  String? pricingError;
+  Map<String, dynamic>? lastPricingBody;
+  /// Last settle request body, so tests can assert what the tablet sent.
+  Map<String, dynamic>? lastSettleBody;
+
   final _serverVersions = <String, int>{};
 
   void setVersions(Map<String, int> v) => _serverVersions
@@ -213,8 +222,20 @@ class FakeBackend {
             'printJobs': <Map<String, dynamic>>[],
           });
         }
+        if (req.method == 'POST' && path.endsWith('/pricing')) {
+          final body = jsonDecode(req.body) as Map<String, dynamic>;
+          lastPricingBody = body;
+          if (pricingError != null) return _json(400, {'error': pricingError});
+          if (pricingPending) {
+            return _json(200, {'approval': {'approvalId': 'app-1', 'status': 'PENDING'}});
+          }
+          return _json(200, {
+            'order': {'discountId': body['discountId'], 'voucherId': body['voucherId']},
+          });
+        }
         if (req.method == 'POST' && path.endsWith('/settle')) {
           final body = jsonDecode(req.body) as Map<String, dynamic>;
+          lastSettleBody = body;
           return _json(200, {
             'bill': {
               'transactionId': 'txn-1',
