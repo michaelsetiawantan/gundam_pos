@@ -98,7 +98,7 @@ final _parentById = <String, String?>{'cat-bev': null, 'cat-bev-coffee': 'cat-be
 
 void main() {
   group('discount/voucher eligibility (pure)', () {
-    test('parent-category tag inherits to descendants; untagged dormant', () {
+    test('parent-category tag inherits to descendants; untagged = whole bill', () {
       final parentTag = dv.DiscountMaster.fromJson(_discountJson(id: 'd-parent', tags: [_tag('cat-bev')]));
       final childTag = dv.DiscountMaster.fromJson(_discountJson(id: 'd-child', tags: [_tag('cat-bev-coffee', includesChildren: false)]));
       final untagged = dv.DiscountMaster.fromJson(_discountJson(id: 'd-none'));
@@ -111,7 +111,7 @@ void main() {
 
       expect(eligible, contains('d-parent'), reason: 'parent tag covers descendant line category');
       expect(eligible, contains('d-child'), reason: 'exact non-inheriting tag matches its own category');
-      expect(eligible, isNot(contains('d-none')), reason: 'untagged master is dormant');
+      expect(eligible, contains('d-none'), reason: 'no category tag = applies to the whole bill');
     });
 
     test('non-inheriting tag does NOT cover a parent line category', () {

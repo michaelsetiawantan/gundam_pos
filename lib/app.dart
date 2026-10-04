@@ -20,13 +20,29 @@ class PosApp extends StatefulWidget {
 
 class _PosAppState extends State<PosApp> {
   late final AppSession _session;
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   bool _booted = false;
 
   @override
   void initState() {
     super.initState();
     _session = (widget.sessionProvider ?? AppDependencies.create)();
+    _session.addListener(_onSessionChanged);
     _boot();
+  }
+
+  /// Shared print-alert surface: a fire-and-forget print (bill at settle,
+  /// captain/bev at send-cart) may finish AFTER its screen moved on, so the
+  /// shell drains the session's pending alerts and shows ONE snackbar. Cleared
+  /// immediately, so an empty surface never arms a snackbar (no spam).
+  void _onSessionChanged() {
+    if (_session.pendingPrintAlerts.isEmpty) return;
+    final alerts = List<String>.of(_session.pendingPrintAlerts);
+    _session.clearPrintAlerts();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _messengerKey.currentState?.showSnackBar(SnackBar(content: Text(alerts.join(' · '))));
+    });
   }
 
   Future<void> _boot() async {
@@ -36,6 +52,7 @@ class _PosAppState extends State<PosApp> {
 
   @override
   void dispose() {
+    _session.removeListener(_onSessionChanged);
     _session.dispose();
     super.dispose();
   }
@@ -45,6 +62,7 @@ class _PosAppState extends State<PosApp> {
     return MaterialApp(
       title: 'Gundam POS',
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _messengerKey,
       theme: PosTheme.theme(),
       home: _booted
           ? ListenableBuilder(

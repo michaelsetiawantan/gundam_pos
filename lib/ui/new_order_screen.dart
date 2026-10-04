@@ -50,6 +50,13 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       printer: widget.session.printDispatcher,
       // The session's gate: pinned shift rules (config change applies next day).
       shiftGate: widget.session.gateFor(widget.config),
+      pushStore: widget.session.pushStore,
+      // Client-born order numbers + the POS shortcode they embed, so an offline
+      // start mints a unique local id the server accepts idempotently.
+      orderNumbers: widget.session.orderNumbers,
+      shortcode: widget.session.shortcode,
+      // Late print warnings (captain/bev) reach the operator via the shell.
+      onPrintAlerts: widget.session.notePrintAlerts,
     );
     final ok = await controller.startOrder(
       tableId: id,
@@ -97,6 +104,11 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
             TextField(
               controller: _tableText,
               maxLength: 16,
+              // Re-evaluate the Start button as the operator types: without this
+              // the button stayed disabled until they tapped "Other table" again
+              // (the tap was the only setState). As long as a name is typed, the
+              // order can start.
+              onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(labelText: 'Table name', counterText: ''),
               inputFormatters: [LengthLimitingTextInputFormatter(16)],
             ),

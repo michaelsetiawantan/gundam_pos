@@ -11,6 +11,7 @@ import 'package:gundam_pos/state/session_store.dart';
 import 'package:gundam_pos/ui/about_screen.dart';
 import 'package:gundam_pos/ui/more_screen.dart';
 import 'package:gundam_pos/ui/theme.dart';
+import 'package:path/path.dart' as p;
 
 import 'support/fake_backend.dart';
 
@@ -241,7 +242,9 @@ void main() {
       expect(attempt.outcome, UpdateOutcome.installed);
       expect(bridge.downloaded, ['https://pos.example/a.apk']);
       expect(bridge.installed.single, endsWith('gundam-pos-v0.3.0.apk'));
-      expect(File(bridge.installed.single).existsSync(), isTrue);
+      expect(File(bridge.installed.single).existsSync(), isTrue,
+          reason: 'the APK handed to the installer is kept until it finishes; '
+              'the app-start prune clears it on the next launch');
     });
 
     test('a SHA-256 mismatch REFUSES the install and reports it', () async {
@@ -281,6 +284,109 @@ void main() {
       final attempt = await UpdateService(bridge).apply(release);
       expect(attempt.outcome, UpdateOutcome.failed);
       expect(attempt.message, contains('installer unavailable'));
+    });
+
+    test('staging a new version deletes earlier APKs — only the new one remains', () async {
+      // Two full-size APKs left behind by previous updates, plus a temp download.
+      _oldFile(p.join(dir.path, 'gundam-pos-v0.1.0.apk'), 'old-1');
+      _oldFile(p.join(dir.path, 'gundam-pos-v0.2.0.apk'), 'old-2');
+      _oldFile(p.join(dir.path, 'staging.part'), 'partial');
+
+      final bytes = List<int>.filled(16, 5);
+      // failInstall keeps the freshly staged file so we can inspect the directory.
+      final bridge = _FakeBridge(bytes, dir: dir.path)..failInstall = true;
+      final release = ReleaseInfo.parse(FakeBackend.release(
+        version: '0.3.0',
+        versionCode: 3,
+        sha256: sha256.convert(bytes).toString(),
+      ))!;
+
+      await UpdateService(bridge).apply(release);
+
+      final names = dir.listSync().whereType<File>().map((f) => p.basename(f.path)).toList();
+      expect(names, ['gundam-pos-v0.3.0.apk'],
+          reason: 'previous APKs and the .part are removed; only the new APK stays');
+    });
+
+    test('non-APK files (logs) survive the staging cleanup', () async {
+      final log = File(p.join(dir.path, 'update.log'))..writeAsStringSync('keep me');
+      final bytes = List<int>.filled(8, 6);
+      final bridge = _FakeBridge(bytes, dir: dir.path)..failInstall = true;
+      final release = ReleaseInfo.parse(FakeBackend.release(
+        versionCode: 3,
+        sha256: sha256.convert(bytes).toString(),
+      ))!;
+
+      await UpdateService(bridge).apply(release);
+
+      expect(log.existsSync(), isTrue);
+      expect(log.readAsStringSync(), 'keep me');
+    });
+
+    test('a cleanup failure is swallowed — apply never throws', () async {
+      // apkDirectory points under a regular file: createSync/listSync cannot
+      // work, so the whole staging step fails — but apply returns, not throws.
+      final blocker = File(p.join(dir.path, 'not-a-dir'))..writeAsStringSync('x');
+      final bytes = List<int>.filled(8, 1);
+      final bridge = _FakeBridge(bytes, dir: p.join(blocker.path, 'apk'));
+      final release = ReleaseInfo.parse(FakeBackend.release(
+        versionCode: 3,
+        sha256: sha256.convert(bytes).toString(),
+      ))!;
+
+      final attempt = await UpdateService(bridge).apply(release); // must not throw
+      expect(attempt.outcome, UpdateOutcome.failed);
+      expect(bridge.installed, isEmpty);
+    });
+
+    test('a SHA-256 mismatch keeps the previous valid APK untouched', () async {
+      final previous = File(p.join(dir.path, 'gundam-pos-v0.2.0.apk'))..writeAsStringSync('previous-good');
+      final bridge = _FakeBridge(List<int>.filled(32, 7), dir: dir.path);
+      final release = ReleaseInfo.parse(FakeBackend.release(
+        versionCode: 3,
+        sha256: 'a' * 64, // advertised digest the bytes do not match
+      ))!;
+
+      final attempt = await UpdateService(bridge).apply(release);
+
+      expect(attempt.outcome, UpdateOutcome.shaMismatch);
+      expect(bridge.installed, isEmpty);
+      expect(previous.existsSync(), isTrue,
+          reason: 'verification runs before cleanup, so the old APK is not deleted');
+    });
+
+    test('app-start prune clears APKs left by older builds; in-use file and non-APKs survive', () async {
+      _oldFile(p.join(dir.path, 'gundam-pos-v0.1.0.apk'), 'old-1');
+      _oldFile(p.join(dir.path, 'gundam-pos-v0.2.0.apk'), 'old-2');
+      _oldFile(p.join(dir.path, 'staging.part'), 'partial');
+      File(p.join(dir.path, 'update.log')).writeAsStringSync('keep me');
+      final inUse = p.join(dir.path, 'gundam-pos-v0.3.0.apk');
+      _oldFile(inUse, 'installing');
+
+      UpdateService.pruneDirectory(dir.path, keep: inUse);
+
+      final names = dir.listSync().whereType<File>().map((f) => p.basename(f.path)).toList()..sort();
+      expect(names, ['gundam-pos-v0.3.0.apk', 'update.log'],
+          reason: 'old APKs + .part are cleared; the in-use APK and non-APK files stay');
+    });
+
+    test('a FRESH download survives the app-start prune (pending install)', () async {
+      // Field bug: the user downloaded the update, switched back to the app (which
+      // re-ran the start prune without a `keep`), and Android could no longer read
+      // the APK → "can't install / problem parsing the package".
+      final fresh = File(p.join(dir.path, 'gundam-pos-v0.4.9.apk'))..writeAsStringSync('just downloaded');
+      _oldFile(p.join(dir.path, 'gundam-pos-v0.1.0.apk'), 'ancient');
+
+      UpdateService.pruneDirectory(dir.path); // exactly what app start does
+
+      expect(fresh.existsSync(), isTrue, reason: 'a just-downloaded APK must not be yanked mid-install');
+      expect(File(p.join(dir.path, 'gundam-pos-v0.1.0.apk')).existsSync(), isFalse,
+          reason: 'older leftovers are still cleaned');
+    });
+
+    test('pruneStaleDownloads on a missing directory never throws', () async {
+      final bridge = _FakeBridge(const [], dir: p.join(dir.path, 'does-not-exist'));
+      await UpdateService(bridge).pruneStaleDownloads(); // must not throw
     });
   });
 
@@ -388,6 +494,19 @@ void main() {
     });
   });
 
+  testWidgets('More exposes a direct "Send diagnostics to server" entry', (tester) async {
+    final session = await readySession(FakeBackend());
+
+    await tester.pumpWidget(MaterialApp(theme: PosTheme.theme(), home: MoreScreen(session: session)));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('Send diagnostics to server'), 300,
+        scrollable: find.byType(Scrollable).first);
+    expect(find.text('Send diagnostics to server'), findsOneWidget);
+    expect(find.textContaining('bundles the device context'), findsOneWidget); // subtitle names its job
+    expect(find.text('Open print diagnostics'), findsOneWidget); // existing entry is NOT removed
+  });
+
   testWidgets('More screen shows the identity + the update notice', (tester) async {
     final backend = FakeBackend()
       ..versionJson = FakeBackend.release(version: '0.3.0', versionCode: 3, changelog: 'Faster order entry.');
@@ -409,3 +528,11 @@ void main() {
 /// This build's versionCode, used to drive "equal / older" cases without
 /// hardcoding the pubspec fallback.
 final int sessionVersionCode = AppVersion.running(schemaVersion: 0).versionCode;
+
+/// A staged file old enough for the age window to prune (a pending install is
+/// deliberately spared for 30 minutes, so "old" test fixtures must be back-dated).
+File _oldFile(String path, String content) {
+  final f = File(path)..writeAsStringSync(content);
+  f.setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 2)));
+  return f;
+}

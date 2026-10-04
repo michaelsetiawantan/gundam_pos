@@ -1,7 +1,7 @@
 name: gundam_pos
 description: "Gundam POS Client (Flutter Android tablet) — cashier UI + local SQLite + print broker. F3b MVP demo flow wired to the real backend."
 publish_to: none
-version: 0.2.0+2
+version: 0.11.0+35
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

@@ -145,6 +145,41 @@ void main() {
     expect(find.text('Licence in grace period'), findsNothing);
   });
 
+  testWidgets('home dashboard fits ONE screen — nothing to scroll, all tiles present', (tester) async {
+    // A modest tablet surface, banner included: the dashboard must still fit.
+    tester.view.physicalSize = const Size(800, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final backend = FakeBackend();
+    backend.licenseBody = FakeBackend.activeLicense(daysLeft: 5); // banner takes space too
+    final store = InMemorySessionStore();
+    final session = backend.createSession(store: store);
+    await store.save(const PosContext()
+        .withRedeem({'deviceToken': 'dev', 'groupId': 'g1', 'tenantId': 't1', 'shortcode': 'NSTAR-POS1'})
+        .copyWith(deviceId: 'device-1'));
+    await session.init();
+    await session.login(email: 'c@x.demo', password: 'Pass1234');
+    expect(session.showLicenseReminder, isTrue);
+
+    await tester.pumpWidget(_wrap(HomeScreen(session: session)));
+    await tester.pumpAndSettle();
+
+    for (final t in ['Open Tables', "Today's Orders", 'Approvals', 'More']) {
+      expect(find.text(t), findsOneWidget, reason: '$t must be on the dashboard');
+    }
+    // The grid is the only scrollable: it must have NOTHING to scroll, i.e. the
+    // page is exactly one screen (the operator asked for no scrolling).
+    final scrollable = tester.state<ScrollableState>(
+      find.descendant(of: find.byType(GridView), matching: find.byType(Scrollable)),
+    );
+    expect(scrollable.position.maxScrollExtent, 0,
+        reason: 'the home dashboard must fit the screen — no scroll, no bottom overflow');
+    expect(find.byType(ListView), findsNothing,
+        reason: 'the dashboard is a single fixed page, not a scrolling list');
+    expect(tester.takeException(), isNull, reason: 'no overflow while fitting the screen');
+  });
+
   testWidgets('ACTIVE licence nearing expiry → informational reminder', (tester) async {
     final backend = FakeBackend();
     backend.licenseBody = FakeBackend.activeLicense(daysLeft: 5);

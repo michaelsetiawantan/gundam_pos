@@ -41,6 +41,10 @@ class _Reprint {
     required this.split,
     required this.methodNames,
     required this.tableName,
+    this.discountName = '',
+    this.voucherName = '',
+    this.discountAmount,
+    this.voucherAmount,
   });
 
   final List<PrintItem> items;
@@ -49,6 +53,10 @@ class _Reprint {
   final money.SplitResult split;
   final Map<String, String> methodNames;
   final String? tableName;
+  final String discountName;
+  final String voucherName;
+  final double? discountAmount;
+  final double? voucherAmount;
 }
 
 class PrintDispatcher {
@@ -117,12 +125,22 @@ class PrintDispatcher {
     required money.SplitResult split,
     Map<String, String> methodNames = const {},
     String? tableName,
+    String? tableNumber,
+    String? openedBy,
     DateTime? paidAt,
     bool reprint = false,
+    String discountName = '',
+    String voucherName = '',
+    double? discountAmount,
+    double? voucherAmount,
+    /// The settle took CASH → ask the receipt printer to pop the drawer.
+    bool openDrawer = false,
   }) async {
       final ctx = context.copyWith(
         ticketType: 'BILL',
         tableName: tableName ?? context.tableName,
+        tableNumber: tableNumber ?? context.tableNumber,
+        openedBy: openedBy ?? context.openedBy,
         reprintLabel: reprint ? 'REPRINT' : '',
       );
     final payload = _payloads.bill(
@@ -133,7 +151,13 @@ class PrintDispatcher {
       split: split,
       methodNames: methodNames,
       paidAt: paidAt,
+      discountName: discountName,
+      voucherName: voucherName,
+      discountAmount: discountAmount,
+      voucherAmount: voucherAmount,
     );
+    // The drawer kick rides the bill job itself (same connection, same queue).
+    if (openDrawer) payload['drawer_pulse'] = true;
     if (!reprint) {
       _reprints[receiptId] = _Reprint(
         items: items,
@@ -142,6 +166,10 @@ class PrintDispatcher {
         split: split,
         methodNames: methodNames,
         tableName: tableName,
+        discountName: discountName,
+        voucherName: voucherName,
+        discountAmount: discountAmount,
+        voucherAmount: voucherAmount,
       );
     }
     return _print(ticketType: 'BILL', payload: payload, printers: routing.billPrinters(), receiptId: receiptId, orderId: null);
@@ -154,8 +182,16 @@ class PrintDispatcher {
   Future<PrintOutcome> printSendCart({
     required List<PrintItem> items,
     String? tableName,
+    String? tableNumber,
+    String? openedBy,
   }) async {
-    final captain = await printCaptainOrder(items: items, tableName: tableName);
+    // Captain sheets MERGE identical rows (per batch); BEV labels never do — a
+    // beverage label printer makes ONE label per product, so qty 2 means two
+    // labels, not one label reading "2".
+    final captain = await printCaptainOrder(
+      items: mergePrintItems(items),
+      tableName: tableName, tableNumber: tableNumber, openedBy: openedBy,
+    );
     final bev = await printBevLabels(items: items, tableName: tableName);
     return PrintOutcome(
       printed: [...captain.printed, ...bev.printed],
@@ -170,13 +206,23 @@ class PrintDispatcher {
   Future<PrintOutcome> printCaptainOrder({
     required List<PrintItem> items,
     String? tableName,
+    String? tableNumber,
+    String? openedBy,
   }) async {
-    final ctx = context.copyWith(ticketType: 'CAPTAIN_ORDER', tableName: tableName ?? context.tableName);
+    final ctx = context.copyWith(
+      ticketType: 'CAPTAIN_ORDER',
+      tableName: tableName ?? context.tableName,
+      tableNumber: tableNumber ?? context.tableNumber,
+      openedBy: openedBy ?? context.openedBy,
+    );
     final printed = <TicketRender>[];
     final alerts = <String>[];
 
     final groups = <int, List<PrintItem>>{};
     for (final i in items) {
+      // MENU label for the grouped header: the cart line carries no category, so
+      // it is resolved here from the synced catalog via the printer routing.
+      if (i.menu.isEmpty) i.menu = routing.menuForItem(i.itemId);
       groups.putIfAbsent(i.batchIndex, () => []).add(i);
     }
     final indices = groups.keys.toList()..sort();
@@ -207,15 +253,25 @@ class PrintDispatcher {
     final printed = <TicketRender>[];
     final alerts = <String>[];
     for (final item in items) {
-      final printer = routing.bevPrinterForItem(item.itemId);
+      final printer = routing.bevPrinterForLine(item.itemId);
       if (printer == null) continue; // not a beverage item — no label by design
-      final out = await _print(
-        ticketType: 'BEV_LABEL',
-        payload: _payloads.bevLabel(ctx: ctx, item: item),
-        printers: [printer],
-      );
-      printed.addAll(out.printed);
-      alerts.addAll(out.alerts);
+      // ONE LABEL PER UNIT: each cup gets its own sticker, so a line of qty N
+      // prints N labels (never a merged line reading "N").
+      for (var unit = 0; unit < item.qty; unit++) {
+        final one = PrintItem(
+          name: item.name, itemId: item.itemId, qty: 1,
+          unitPrice: item.unitPrice, lineTotal: item.unitPrice,
+          priceLevelIndex: item.priceLevelIndex, batchIndex: item.batchIndex,
+          menu: item.menu, modifiers: item.modifiers,
+        );
+        final out = await _print(
+          ticketType: 'BEV_LABEL',
+          payload: _payloads.bevLabel(ctx: ctx, item: one),
+          printers: [printer],
+        );
+        printed.addAll(out.printed);
+        alerts.addAll(out.alerts);
+      }
     }
     return PrintOutcome(printed: printed, alerts: alerts);
   }
@@ -236,6 +292,10 @@ class PrintDispatcher {
       methodNames: rec.methodNames,
       tableName: tableName ?? rec.tableName,
       reprint: true,
+      discountName: rec.discountName,
+      voucherName: rec.voucherName,
+      discountAmount: rec.discountAmount,
+      voucherAmount: rec.voucherAmount,
     );
   }
 
@@ -255,7 +315,7 @@ class PrintDispatcher {
   List<ClientPrinter> _captainTargets(List<PrintItem> batchItems, int step) {
     final byId = <String, ClientPrinter>{};
     for (final i in batchItems) {
-      final p = routing.captainPrinterForItem(i.itemId);
+      final p = routing.captainPrinterForLine(i.itemId);
       if (p != null) byId[p.id] = p;
     }
     if (byId.isNotEmpty) return byId.values.toList();
@@ -315,6 +375,16 @@ class PrintDispatcher {
           widthMm: p.widthMm,
         );
         printed.add(rendered);
+        // Honest reporting: the outlet HAS published formats, yet none matched
+        // this ticket type (or its format failed to render) → the ticket went
+        // out on the built-in layout. The operator must know: otherwise a
+        // divergent ticket is indistinguishable from the agreed one. (No
+        // formats published at all is the expected built-in state — not an alert.)
+        if (!rendered.usedFormat && broker.hasPublishedFormats) {
+          final note = '$ticketType printed with the built-in layout — '
+              'no published server format applied (${rendered.fallbackReason ?? 'no format configured'}).';
+          if (!alerts.contains(note)) alerts.add(note);
+        }
         // IMAGE blocks need raster support; report when they were skipped.
         final images = rendered.entries.where((e) => e.kind == PrintableKind.image).length;
         if (images > 0 && !p.effectiveRasterSupport) {

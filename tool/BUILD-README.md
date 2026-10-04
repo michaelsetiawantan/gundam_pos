@@ -76,8 +76,9 @@ sebagai *trigger*: APK sudah memuat drivernya, web hanya menunjuk yang mana.
 | Transport | `NETWORK`, `BLUETOOTH`, `USB` | semua jalan |
 | USB driver/chip | `CDC_ACM`, `CH340_CH341`, `PL2303`, `FTDI_FT232R`, `FTDI_FT231X`, `CP210X`, `USB_PRINTER_CLASS` (class 0x07), `USB_VENDOR_SPECIFIC` (0xFF) | 8/8 ada di APK |
 | Dialect | `ESC/POS` (Epson), `ESC/POS-CLONE` (clone: init/cut/code page beda) | jalan |
-| Dialect | `STAR`, `CITIZEN` | belum diimplementasi — dipilih → fallback ESC/POS + dilaporkan |
-| Code page | `CP437`, `KATAKANA`, `CP850`, `CP860`, `CP863`, `CP865`, `CP1252`, `CP866`, `CP852`, `CP858` | jalan (index `ESC t n` asli) |
+| Dialect | `STAR` (Star Line Mode — perintahnya beda: `ESC GS t n`, `ESC i n1 n2`, `ESC E`/`ESC F`, `ESC GS a n`, `ESC a n` feed, `ESC d n` cut) | jalan |
+| Dialect | `CITIZEN` (mode ESC/POS Citizen — byte identik Epson untuk semua perintah yang dipakai; tabel code page Citizen sendiri) | jalan |
+| Code page | `CP437`, `KATAKANA`, `CP850`, `CP860`, `CP863`, `CP865`, `CP1252`, `CP866`, `CP852`, `CP858` | jalan (index `ESC t n` asli; Star pakai `ESC GS t n` dengan penomoran Star sendiri — `CP850` tidak ada padanannya di Star → fallback CP437 + warning) |
 | Code page | `UTF-8` | ditolak jujur → fallback CP437 + warning (ESC/POS tidak punya page UTF-8) |
 | Capability | `NATIVE_QR`, `NATIVE_BARCODE`, `CUTTER` | jalan, bisa di-override per printer model |
 | Capability | `RASTER_IMAGE` | belum (butuh rasteriser/dependency) — blok gambar jadi placeholder berlabel |

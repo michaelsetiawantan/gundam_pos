@@ -20,7 +20,7 @@ List<String> _types(List<dynamic> jobs) => [for (final j in jobs) j.ticketType a
 
 void main() {
   group('PrintDispatcher — send-cart (captain per batch + bev per item)', () {
-    test('one captain job per batch and one bev label per beverage item', () async {
+    test('one captain job per batch and one bev label PER UNIT', () async {
       final rec = RecordingTransport();
       final d = buildDispatcher(rec);
       final items = [
@@ -30,9 +30,10 @@ void main() {
       ];
       final out = await d.printSendCart(items: items, tableName: 'A1');
       expect(out.alerts, isEmpty);
-      // 2 batches → 2 captain jobs; 1 espresso is a bev → 2 labels for the 2 espresso rows
+      // 2 batches → 2 captain jobs; the espresso is a bev item and labels print
+      // PER UNIT: 1 (batch 0) + 2 (batch 1, qty 2) = 3 labels.
       expect(_types(rec.jobs).where((t) => t == 'CAPTAIN_ORDER').length, 2);
-      expect(_types(rec.jobs).where((t) => t == 'BEV_LABEL').length, 2);
+      expect(_types(rec.jobs).where((t) => t == 'BEV_LABEL').length, 3);
       expect(rec.jobs.where((j) => j.ticketType == 'CAPTAIN_ORDER').every((j) => j.printer.name == 'Captain Station'), isTrue);
       expect(rec.jobs.where((j) => j.ticketType == 'BEV_LABEL').every((j) => j.printer.name == 'Bar Label'), isTrue);
     });
@@ -163,6 +164,7 @@ void main() {
       expect(await c.startOrder(tableId: 'tbl-a1', tableName: 'A1'), isTrue);
       expect(await c.addItem(config.itemById('item-espresso')!), isNotNull);
       expect(await c.sendCart(), isTrue);
+      await pumpEventQueue();
       expect(c.printAlerts, isEmpty);
       expect(_types(rec.jobs).contains('CAPTAIN_ORDER'), isTrue);
       expect(_types(rec.jobs).contains('BEV_LABEL'), isTrue);
@@ -172,6 +174,7 @@ void main() {
       // a second send-cart produces its own batch sheet
       expect(await c.addItem(config.itemById('item-nasi')!), isNotNull);
       expect(await c.sendCart(), isTrue);
+      await pumpEventQueue();
       expect(_types(rec.jobs).where((t) => t == 'CAPTAIN_ORDER').length, 2);
     });
   });
@@ -206,6 +209,7 @@ void main() {
       );
       c.addPayment(config.paymentMethods.firstWhere((m) => m.type == money.PayType.cash), c.payable);
       expect(await c.settle(), isTrue);
+      await pumpEventQueue();
       expect(c.printAlerts, isEmpty);
       expect(_types(rec.jobs), ['BILL']);
       // same-day reprint of that receipt works off the dispatcher cache

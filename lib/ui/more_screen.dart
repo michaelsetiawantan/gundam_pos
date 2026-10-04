@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
+import 'package:gundam_pos/services/diagnostic_report.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/update_service.dart';
@@ -45,6 +46,9 @@ class _MoreScreenState extends State<MoreScreen> {
   final Map<String, PrinterLink> _usbStatus = {};
   String? _busyPrinterId;
 
+  /// True while a diagnostic bundle is being shipped, so the button is honest.
+  bool _sendingDiag = false;
+
   static const _envPrinterHost = String.fromEnvironment('POS_PRINTER_HOST', defaultValue: '');
 
   @override
@@ -60,10 +64,44 @@ class _MoreScreenState extends State<MoreScreen> {
     _toast(ok ? 'Config synced. Domains cached atomically (temp+rename).' : 'Config refresh failed — last-known-good kept.');
   }
 
-  Future<void> _drain() async {
-    await widget.session.drainPush();
+  /// Repair path: forget the applied domain versions and pull EVERY domain again.
+  Future<void> _reSyncAll() async {
+    final ok = await widget.session.forceFullConfigResync();
     if (!mounted) return;
-    _toast('Pending push queue cleared (acked).');
+    _toast(ok
+        ? 'Full config re-sync done — menus, outlet details and print formats re-pulled.'
+        : 'Re-sync failed — last-known-good kept.');
+  }
+
+  /// Send the queued order lines and dequeue them ONLY when the server accepted
+  /// them. (The old "Push pending" called drainPush, which acks the whole queue
+  /// without sending — that would silently drop queued order items.)
+  Future<void> _syncQueue() async {
+    final n = await widget.session.flushOrderQueue();
+    if (!mounted) return;
+    _toast(n > 0
+        ? '$n queued item(s) synced to the server.'
+        : 'Nothing synced — ${widget.session.orderQueuePending} still queued (offline?). It retries automatically.');
+  }
+
+  /// Manual "Push now": flush the order create/line/send queue AND every
+  /// deferred (offline) settlement, then report honestly — never silent.
+  Future<void> _pushNow() async {
+    final r = await widget.session.pushNow();
+    if (!mounted) return;
+    final parts = <String>[
+      if (r.orderItems > 0) '${r.orderItems} order item(s)',
+      if (r.settlements > 0) '${r.settlements} settlement(s)',
+    ];
+    if (r.failed > 0) {
+      _toast('${r.failed} settlement(s) REFUSED by the server — open Today transactions to fix and commit again.');
+    } else if (parts.isEmpty) {
+      _toast(r.queued > 0
+          ? 'Nothing accepted — ${r.queued} still queued (offline?). It retries automatically.'
+          : 'Nothing to push — the queue is empty.');
+    } else {
+      _toast('Pushed ${parts.join(' + ')} to the server.');
+    }
   }
 
   Future<void> _checkPrinter() async {
@@ -157,6 +195,48 @@ class _MoreScreenState extends State<MoreScreen> {
     _toast(ok ? 'Printer health reported to the server.' : 'Nothing to report (no printer routing synced).');
   }
 
+  /// Ask for a short description, then bundle the device context + print-log
+  /// summary + recent log lines and ship it. Honest result: it says whether the
+  /// bundle reached the server or is queued offline, and surfaces the exact
+  /// failure (e.g. a server refusal) rather than hiding it behind "no network".
+  Future<void> _sendDiagnostics() async {
+    final c = TextEditingController();
+    final desc = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Send diagnostics to server'),
+        content: TextField(
+          controller: c,
+          autofocus: true,
+          maxLength: kDiagMaxDescriptionLen,
+          minLines: 2,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            labelText: 'What went wrong?',
+            hintText: 'e.g. Kitchen printer prints blank tickets since this morning.',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text('Send')),
+        ],
+      ),
+    );
+    if (desc == null || !mounted) return;
+    if (desc.isEmpty) {
+      _toast('Describe the issue in a few words before sending.');
+      return;
+    }
+    setState(() => _sendingDiag = true);
+    final res = await widget.session.sendDiagnostics(description: desc);
+    if (!mounted) return;
+    setState(() => _sendingDiag = false);
+    final why = widget.session.lastDiagnosticFailure;
+    _toast(res.sent > 0
+        ? 'Diagnostic report sent to the server.'
+        : 'Report queued (${res.pending} pending)${why == null ? '' : ' — $why'}. It retries on the next sync.');
+  }
+
   /// Manual, user-confirmed update check (the PRD's automatic check rides the
   /// config sync; this button is the operator's on-demand view).
   Future<void> _checkUpdate() async {
@@ -225,14 +305,34 @@ class _MoreScreenState extends State<MoreScreen> {
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   _infoRow('Last config sync', s.lastSyncAt == null ? 'never' : s.lastSyncAt!.toIso8601String().substring(11, 19)),
                   _infoRow('Pending push queue', '${s.pendingPushCount} item(s)'),
+                  _infoRow('Queued order items', '${s.orderQueuePending} waiting to sync'),
+                  _infoRow('Local settlements waiting', '${s.pendingSettlements.length} (offline)'),
+                  if (s.failedSettlementCount > 0)
+                    _infoRow('Settlements refused by server', '${s.failedSettlementCount} — see Today transactions'),
                   const SizedBox(height: 12),
                   Row(children: [
                     OutlinedButton(onPressed: s.syncing ? null : _refresh, child: const Text('Refresh config')),
                     const SizedBox(width: 12),
-                    OutlinedButton(onPressed: s.pendingPushCount == 0 ? null : _drain, child: const Text('Push pending')),
+                    OutlinedButton(
+                        onPressed: s.busy ? null : _syncQueue,
+                        child: const Text('Sync now')),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(children: [
+                    FilledButton.icon(
+                        onPressed: s.busy ? null : _pushNow,
+                        icon: const Icon(Icons.cloud_upload, size: 18),
+                        label: const Text('Push now')),
+                    const SizedBox(width: 12),
+                    OutlinedButton(
+                        onPressed: s.syncing ? null : _reSyncAll,
+                        child: const Text('Re-sync everything')),
                   ]),
                   const SizedBox(height: 6),
-                  const Text('Atomic temp+rename; failed pulls keep the last-known-good cache.',
+                  const Text(
+                      'Push now sends every queued order create/line/send AND every deferred (offline) settlement. '
+                      'A settlement the server refuses is marked FAILED with its code and is NOT retried until you commit it again '
+                      'from Today transactions. Atomic temp+rename; failed pulls keep the last-known-good cache.',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                 ]),
               ),
@@ -288,9 +388,20 @@ class _MoreScreenState extends State<MoreScreen> {
               ),
               _Section(
                 icon: Icons.bug_report,
-                title: 'Print diagnostics',
+                title: 'Diagnostics & support',
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   _infoRow('Pending upload', '${s.printLogPending} print log(s)'),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _sendingDiag ? null : _sendDiagnostics,
+                    icon: _sendingDiag
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.send),
+                    label: const Text('Send diagnostics to server'),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text('Report a problem to the server: bundles the device context, the print-log summary and recent app log lines with your note. Offline it is queued and sent on the next sync.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                   const SizedBox(height: 12),
                   OutlinedButton(
                     onPressed: () => Navigator.of(context).push(

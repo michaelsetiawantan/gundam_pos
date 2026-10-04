@@ -127,7 +127,33 @@ void main() {
       expect(row.printerTransport, 'SERIAL');
     });
 
-    test('a dialect fallback (declared-but-unimplemented) is recorded as FALLBACK', () async {
+    test('a dialect outside the registry is recorded as FALLBACK', () async {
+      final store = MemoryPrintLogStore();
+      final audit = PrintLogAudit(store: store);
+      final d = buildDispatcher(
+        RecordingTransport(),
+        logs: audit,
+        outlet: _outlet(
+          printers: [
+            {'id': 'p', 'name': 'Unknown', 'transport': 'NETWORK', 'ip': '1.1.1.1', 'protocol': 'ZPL'},
+          ],
+        ),
+      );
+      final f = _flow();
+      await d.printBill(items: [_item()], receiptId: 'R-1', flow: f, split: _split(f));
+      final row = await _onlyRow(store);
+      expect(row.outcome, kOutcomeFallback);
+      expect(row.dialectCode, 'ZPL');
+      expect(row.dialectFallback, isTrue);
+      expect(row.warnings.any((w) => w.contains('not in the dialect registry')), isTrue);
+    });
+
+    test('an implemented dialect (STAR) is NOT logged as a dialect fallback', () async {
+      // Star really encodes with Star Line Mode bytes (`ESC GS t n` code page,
+      // `ESC GS a n` align, `ESC i` size, `ESC d n` cut), so it is no longer a
+      // *dialect* downgrade. This bill still lands in FALLBACK, but only because
+      // this build implements no Star native QR: the receipt-id QR block degrades
+      // to the labelled text line instead.
       final store = MemoryPrintLogStore();
       final audit = PrintLogAudit(store: store);
       final d = buildDispatcher(
@@ -142,10 +168,11 @@ void main() {
       final f = _flow();
       await d.printBill(items: [_item()], receiptId: 'R-1', flow: f, split: _split(f));
       final row = await _onlyRow(store);
-      expect(row.outcome, kOutcomeFallback);
       expect(row.dialectCode, 'STAR');
-      expect(row.dialectFallback, isTrue);
-      expect(row.warnings.any((w) => w.contains('not implemented')), isTrue);
+      expect(row.dialectFallback, isFalse);
+      expect(row.warnings.any((w) => w.contains('not implemented')), isFalse);
+      expect(row.warnings.any((w) => w.contains('not in the dialect registry')), isFalse);
+      expect(row.warnings.any((w) => w.contains('no native QR')), isTrue);
     });
 
     test('a code-page fallback is recorded as FALLBACK', () async {
@@ -282,6 +309,31 @@ void main() {
       final second = await uploader.uploadPending(tenantId: 't1', assetId: 'dev-1');
       expect(second.uploaded, 1);
       expect(await store.pendingUploadCount(), 0);
+    });
+
+    test('a SERVER refusal is NOT reported as "no network" (asset_not_found)', () async {
+      // Field report: retry upload said "no network" while the network was fine —
+      // the server had answered 404 because it did not recognise the reporting
+      // identity. The two must never be conflated.
+      final store = MemoryPrintLogStore();
+      await store.insert(_row('a', created: DateTime(2026, 9, 28, 10)));
+      final uploader = PrintLogUploader(
+        api: PosApi(ApiClient(
+          baseUrl: 'http://fake.test',
+          httpClient: MockClient((_) async => http.Response(
+                '{"error":"asset_not_found"}',
+                404,
+                headers: {'content-type': 'application/json'},
+              )),
+        )),
+        store: store,
+      );
+
+      final res = await uploader.uploadPending(tenantId: 't1', assetId: 'dev-1');
+      expect(res.offline, isFalse, reason: 'the server answered — not a network failure');
+      expect(res.failed, 1);
+      expect(res.rejectedCodes, contains('asset_not_found'));
+      expect(await store.pendingUploadCount(), 1, reason: 'rows are kept for a later retry');
     });
 
     test('re-upload after a crash does not duplicate rows and keeps the clientLogId', () async {

@@ -4,6 +4,7 @@ import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/session_store.dart';
+import 'package:gundam_pos/ui/approvals_screen.dart';
 import 'package:gundam_pos/ui/more_screen.dart';
 import 'package:gundam_pos/ui/open_tables_screen.dart';
 import 'package:gundam_pos/ui/shift_screen.dart';
@@ -64,31 +65,47 @@ class HomeScreen extends StatelessWidget {
               ),
             ],
           ),
-          body: Padding(
-            padding: const EdgeInsets.all(20),
-            child: ListView(
-              children: [
-                if (session.showLicenseReminder) ...[
-                  _LicenseReminder(session: session),
-                  const SizedBox(height: 20),
-                ],
-                _ContextCard(ctx: ctx, lastSync: session.lastSyncAt, config: session.config != null),
-                const SizedBox(height: 20),
-                GridView.count(
-                  crossAxisCount: 3,
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 1.25,
-                  children: [
-                    HomeTile(icon: Icons.table_restaurant, title: 'Open Tables', subtitle: 'Server-synced hanging orders', onTap: () => _openTables(context)),
-                    HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, TodayTransactionsScreen(session: session))),
-                    HomeTile(icon: Icons.payments_outlined, title: shiftGate.startLabel, subtitle: shiftGate.isAutomatic ? 'Meal-shift cash count' : 'Open the cashier shift', onTap: () => _openShift(context)),
-                    HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, MoreScreen(session: session))),
+          // One screen, no scrolling: the context strip and the tile grid share
+          // whatever height the tablet has, and the grid is sized to fit it
+          // exactly. Nothing here is a scrolling list on purpose.
+          body: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (session.showLicenseReminder) ...[
+                    _LicenseReminder(session: session),
+                    const SizedBox(height: 10),
                   ],
-                ),
-              ],
+                  _ContextCard(ctx: ctx, lastSync: session.lastSyncAt, config: session.config != null),
+                  const SizedBox(height: 12),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, box) {
+                        const cols = 3, rows = 2, gap = 10.0;
+                        final cw = (box.maxWidth - gap * (cols - 1)) / cols;
+                        final ch = (box.maxHeight - gap * (rows - 1)) / rows;
+                        return GridView.count(
+                          crossAxisCount: cols,
+                          mainAxisSpacing: gap,
+                          crossAxisSpacing: gap,
+                          // Fit the leftover height exactly — never scroll.
+                          childAspectRatio: ch <= 0 ? 1 : cw / ch,
+                          physics: const NeverScrollableScrollPhysics(),
+                          children: [
+                            HomeTile(icon: Icons.table_restaurant, title: 'Open Tables', subtitle: 'Server-synced hanging orders', onTap: () => _openTables(context)),
+                            HomeTile(icon: Icons.receipt_long, title: "Today's Orders", subtitle: 'Same-day transactions', onTap: () => _open(context, TodayTransactionsScreen(session: session))),
+                            HomeTile(icon: Icons.payments_outlined, title: shiftGate.startLabel, subtitle: shiftGate.isAutomatic ? 'Meal-shift cash count' : 'Open the cashier shift', onTap: () => _openShift(context)),
+                            HomeTile(icon: Icons.verified_outlined, title: 'Approvals', subtitle: 'Decide pending requests', onTap: () => _open(context, ApprovalsScreen(session: session))),
+                            HomeTile(icon: Icons.settings_outlined, title: 'More', subtitle: 'Sync, health, update', onTap: () => _open(context, MoreScreen(session: session))),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         );
@@ -140,25 +157,25 @@ class _ContextCard extends StatelessWidget {
     final shortcode = ctx.shortcode ?? '-';
     final outlet = ctx.outletName ?? '';
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         gradient: const LinearGradient(colors: [PosTheme.petrol, PosTheme.petrolDark]),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          const CircleAvatar(backgroundColor: PosTheme.teal, child: Icon(Icons.person, color: PosTheme.petrol)),
-          const SizedBox(width: 12),
+          const CircleAvatar(radius: 20, backgroundColor: PosTheme.teal, child: Icon(Icons.person, color: PosTheme.petrol, size: 22)),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700)),
-              Text(outlet, style: const TextStyle(color: PosTheme.tealSoft, fontSize: 13)),
+              Text(name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
+              Text(outlet, style: const TextStyle(color: PosTheme.tealSoft, fontSize: 12)),
             ]),
           ),
         ]),
-        const SizedBox(height: 14),
+        const SizedBox(height: 10),
         const Divider(color: PosTheme.tealSoft, height: 1),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           _Fact(icon: Icons.devices, label: 'Device', value: shortcode),
           _Fact(icon: Icons.timelapse, label: 'Last sync', value: lastSync == null ? 'never' : _ago(lastSync!)),
@@ -219,46 +236,57 @@ class _LicenseReminder extends StatelessWidget {
     final accent = grace ? PosTheme.danger : PosTheme.warn;
     final title = grace ? 'Licence in grace period' : 'Licence expiring soon';
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: accent.withValues(alpha: 0.08),
         border: Border(left: BorderSide(color: accent, width: 6)),
         borderRadius: BorderRadius.circular(14),
       ),
+      // Compact on purpose: this banner shares the screen with the tile grid,
+      // and the dashboard must never scroll.
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Icon(grace ? Icons.warning_amber_rounded : Icons.schedule, color: accent, size: 32),
-          const SizedBox(width: 12),
+          Icon(grace ? Icons.warning_amber_rounded : Icons.schedule, color: accent, size: 24),
+          const SizedBox(width: 10),
           Expanded(
-            child: Text(title, style: TextStyle(color: accent, fontSize: 22, fontWeight: FontWeight.w800)),
+            child: Text(title, style: TextStyle(color: accent, fontSize: 17, fontWeight: FontWeight.w800)),
           ),
-          IconButton(
-            tooltip: 'Dismiss',
-            onPressed: session.dismissLicenseReminder,
-            icon: const Icon(Icons.close),
+          SizedBox(
+            height: 32,
+            width: 32,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              tooltip: 'Dismiss',
+              onPressed: session.dismissLicenseReminder,
+              icon: const Icon(Icons.close, size: 18),
+            ),
           ),
         ]),
-        const SizedBox(height: 8),
+        const SizedBox(height: 4),
         Text('Official coverage: ${_fmt(l.validFrom)} → ${_fmt(l.validTo)}',
-            style: const TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
-        const SizedBox(height: 6),
+            style: const TextStyle(fontSize: 13, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
         if (grace) ...[
           Text('Grace window: ${_fmt(l.graceStart)} → ${_fmt(l.graceEndsAt)} (${l.graceDays ?? 0} days)',
-              style: const TextStyle(fontSize: 16, color: PosTheme.slate)),
-          const SizedBox(height: 10),
+              style: const TextStyle(fontSize: 13, color: PosTheme.slate)),
+          const SizedBox(height: 6),
           const Text('POS sales are BLOCKED once the grace ends. The owner must renew from the web app to keep selling.',
-              style: TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+              style: TextStyle(fontSize: 13, color: PosTheme.ink, fontWeight: FontWeight.w600)),
         ] else ...[
           const Text('Renew from the web app before the coverage ends to avoid interruption.',
-              style: TextStyle(fontSize: 16, color: PosTheme.ink, fontWeight: FontWeight.w600)),
+              style: TextStyle(fontSize: 13, color: PosTheme.ink, fontWeight: FontWeight.w600)),
         ],
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Align(
           alignment: Alignment.centerRight,
           child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            ),
             onPressed: session.dismissLicenseReminder,
-            icon: const Icon(Icons.check),
-            label: const Text('I understand'),
+            icon: const Icon(Icons.check, size: 16),
+            label: const Text('I understand', style: TextStyle(fontSize: 13)),
           ),
         ),
       ]),

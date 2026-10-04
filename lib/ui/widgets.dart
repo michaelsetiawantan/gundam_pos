@@ -216,23 +216,43 @@ class HomeTile extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(14),
         child: Container(
-          constraints: const BoxConstraints(minHeight: 132),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(color: PosTheme.tealSoft, borderRadius: BorderRadius.circular(12)),
-                child: Icon(icon, color: PosTheme.petrol, size: 26),
+          // No forced minimum height: the dashboard fits the screen, so a tile
+          // must accept whatever space the grid gives it (a hard minHeight is
+          // what used to push the page into scrolling).
+          padding: const EdgeInsets.all(12),
+          // Scale the content down instead of overflowing when the licence
+          // banner squeezes the grid: the dashboard NEVER scrolls and a tile
+          // never shows a striped overflow.
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: SizedBox(
+              width: 210,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(color: PosTheme.tealSoft, borderRadius: BorderRadius.circular(10)),
+                    child: Icon(icon, color: PosTheme.petrol, size: 22),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.ink)),
+                  const SizedBox(height: 2),
+                  // Ellipsised: a long label must never overflow the fixed tile again
+                  // (it did once an extra Home tile made the grid taller/narrower).
+                  Text(subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 12, color: PosTheme.slate)),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: PosTheme.ink)),
-              const SizedBox(height: 2),
-              Text(subtitle, style: const TextStyle(fontSize: 14, color: PosTheme.slate)),
-            ],
+            ),
           ),
         ),
       ),

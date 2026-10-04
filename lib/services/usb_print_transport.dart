@@ -13,8 +13,10 @@
 /// wrong-chip write. The queue then retries per the printer's policy.
 library;
 
+import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
+import 'package:gundam_pos/services/print_image.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/usb_printer_channel.dart';
 
@@ -42,15 +44,32 @@ class UsbChipMismatchException extends UsbPrintException {
 }
 
 class UsbPrintTransport implements PrintTransport {
-  UsbPrintTransport({UsbPrinterChannel? channel, int baud = 9600})
+  UsbPrintTransport({UsbPrinterChannel? channel, int baud = 9600, PrintImageSource? Function()? imageSourceProvider})
       : _channel = channel ?? UsbPrinterChannel(),
-        _baud = baud;
+        _baud = baud,
+        _imageSourceProvider = imageSourceProvider;
 
   final UsbPrinterChannel _channel;
 
   /// Line speed for the chip init. Config carries no baud; thermal printers are
   /// almost always 9600 8N1, so that is the documented default.
   final int _baud;
+
+  /// Resolves an IMAGE block's `assetKey` to cached bytes (read at send time).
+  final PrintImageSource? Function()? _imageSourceProvider;
+
+  /// IMAGE entries need the async resolver (decode + dither); a ticket without
+  /// them takes the synchronous encoder exactly as before.
+  Future<List<int>> _encode(PrintJob job) async {
+    final source = _imageSourceProvider?.call();
+    final needsRaster = source != null &&
+        job.printer.supportsRasterImage &&
+        job.entries.any((e) => e.kind == PrintableKind.image);
+    if (needsRaster) {
+      return (await encodePrintJobWithImages(job, source: source, widthMm: job.printer.widthMm)).bytes;
+    }
+    return encodePrintJob(job, widthMm: job.printer.widthMm);
+  }
 
   /// Send one job: enumerate → resolve chip → permission → open → write ESC/POS
   /// bytes. Throws [UsbPrintException] (or [UsbChipMismatchException]) on fault.
@@ -68,7 +87,7 @@ class UsbPrintTransport implements PrintTransport {
     if (!opened.ok) {
       throw UsbPrintException(printerLinkStateFromCode(opened.state), opened.detail);
     }
-    final result = await _channel.write(encodePrintJob(job, widthMm: job.printer.widthMm));
+    final result = await _channel.write(await _encode(job));
     if (!result.ok) {
       throw UsbPrintException(printerLinkStateFromCode(result.state), result.detail);
     }

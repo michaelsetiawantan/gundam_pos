@@ -138,8 +138,8 @@ void main() {
       });
       String line(String label, String value) => label.padRight(48 - value.length) + value;
       expect(r.lines, hasLength(2));
-      expect(r.lines[0], line('Subtotal', '50000.00'));
-      expect(r.lines[1], line('Total', '50000.00'));
+      expect(r.lines[0], line('Subtotal', '50.000,00'));
+      expect(r.lines[1], line('Total', '50.000,00'));
     });
 
     test('a MONEY_LINES block with every line zero is skipped entirely', () {
@@ -198,7 +198,9 @@ void main() {
       });
       final row = r.lines.single;
       expect(row.length, 48);
-      expect(row, 'Espresso'.padRight(33) + '2'.padLeft(3) + '44000.00'.padLeft(12));
+      // The money column keeps a 2-cell gutter after the qty (a crowded pair is
+      // unreadable on thermal paper), so the name column is 31 not 33.
+      expect(row, 'Espresso'.padRight(31) + '2'.padLeft(3) + '44.000,00'.padLeft(14));
     });
 
     test('NAME_QTY omits price', () {
@@ -210,6 +212,62 @@ void main() {
         ],
       });
       expect(r.lines.single, 'Iced Tea'.padRight(45) + '3'.padLeft(3));
+    });
+  });
+
+  group('MODIFIER_LIST — a free modifier prints name only', () {
+    Map<String, dynamic> payload() => {
+          'items': [
+            {
+              'name': 'Copi',
+              'qty': 1,
+              'price': 30000.0,
+              'lineTotal': 30000.0,
+              'modifiers': [
+                {'name': 'Add egg', 'price': 0.0},
+                {'name': 'Extra Shot', 'price': 15000.0},
+              ],
+            },
+          ],
+        };
+
+    test('price 0 → name only, no 0/0.00 on the row', () {
+      final r = render([
+        {'id': 'm', 'type': 'MODIFIER_LIST', 'indent': 2, 'withPrice': true},
+      ], payload());
+      final egg = r.lines.firstWhere((l) => l.contains('Add egg'));
+      expect(egg.trim(), 'Add egg');
+      expect(egg, isNot(contains('0')));
+    });
+
+    test('price > 0 → the price is still shown', () {
+      final r = render([
+        {'id': 'm', 'type': 'MODIFIER_LIST', 'indent': 2, 'withPrice': true},
+      ], payload());
+      final line = r.lines.firstWhere((l) => l.contains('Extra Shot'));
+      expect(line, contains('15.000,00'));
+    });
+  });
+
+  group('ITEM_LIST.withModifiers — always name only (never a modifier price)', () {
+    test('a priced modifier still prints without its price', () {
+      final r = render([
+        {'id': 'i', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY', 'groupByMenu': true, 'withModifiers': true},
+      ], {
+        'items': [
+          {
+            'name': 'Latte',
+            'qty': 1,
+            'menu': 'Coffee',
+            'modifiers': [
+              {'name': 'Oat', 'price': 8000.0},
+            ],
+          },
+        ],
+      });
+      final oat = r.lines.firstWhere((l) => l.contains('Oat'));
+      expect(oat.trim(), '+ Oat');
+      expect(oat, isNot(contains('8000')));
     });
   });
 
@@ -331,13 +389,13 @@ void main() {
       // item rows present in array order before money lines
       expect(joined.indexOf('Espresso'), lessThan(joined.indexOf('Subtotal')));
       expect(joined, contains('Espresso'));
-      expect(joined, contains('44000.00'));
+      expect(joined, contains('44.000,00'));
       expect(joined, contains('Extra Shot'));
       // money lines, discount (0) omitted
-      expect(joined, matches(RegExp(r'Subtotal\s+66000\.00')));
-      expect(joined, matches(RegExp(r'VAT\s+6600\.00')));
-      expect(joined, matches(RegExp(r'Total\s+72600\.00')));
-      expect(joined, matches(RegExp(r'Change\s+27400\.00')));
+      expect(joined, matches(RegExp(r'Subtotal\s+66\.000,00')));
+      expect(joined, matches(RegExp(r'VAT\s+6\.600,00')));
+      expect(joined, matches(RegExp(r'Total\s+72\.600,00')));
+      expect(joined, matches(RegExp(r'Change\s+27\.400,00')));
       expect(joined, isNot(contains('Discount')));
       // payment + reference
       expect(joined, contains('Cash'));
@@ -393,8 +451,8 @@ void main() {
         {'id': 'm', 'type': 'MONEY_LINES', 'lines': ['SUBTOTAL', 'VAT', 'TOTAL', 'PAID', 'CHANGE']},
       ], payload);
       final joined = r.lines.join('\n');
-      expect(joined, matches(RegExp('Total\\s+${flow.total.toStringAsFixed(2)}')));
-      expect(joined, matches(RegExp('VAT\\s+${flow.vatAmount.toStringAsFixed(2)}')));
+      expect(joined, contains(money.moneyLabel(flow.total, '')));
+      expect(joined, contains(money.moneyLabel(flow.vatAmount, '')));
       expect(joined, contains('Change'));
     });
 
@@ -403,7 +461,7 @@ void main() {
         {'id': 'i', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE'},
       ], payload);
       expect(r.lines.single, contains('Flat White'));
-      expect(r.lines.single, contains('76000.00'));
+      expect(r.lines.single, contains('76.000,00'));
       final items = payload['items'] as List;
       expect((items.single as Map)['priceLevelIndex'], 0);
     });

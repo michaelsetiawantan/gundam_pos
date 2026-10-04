@@ -81,6 +81,24 @@ void main() {
     expect(c.receiptId, startsWith('NSTAR-POS1-'));
   });
 
+  testWidgets('a bill whose Decimals arrive as STRINGS still opens the success page', (tester) async {
+    // Field report: the server settled the bill (money taken) but the app never
+    // showed the success page — a cast threw while building that route.
+    final c = _controller(backend: FakeBackend()..settleStringNumbers = true);
+    await tester.pumpWidget(MaterialApp(theme: PosTheme.theme(), home: PaymentScreen(controller: c)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cash'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add payment'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Settle'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Paid in full'), findsOneWidget);
+    expect(c.receiptId, startsWith('NSTAR-POS1-'));
+  });
+
   testWidgets('cash overpay shows change on the payment screen', (tester) async {
     final c = _controller();
     await tester.pumpWidget(MaterialApp(theme: PosTheme.theme(), home: PaymentScreen(controller: c)));
@@ -142,7 +160,7 @@ void main() {
 
     expect(c.shipmentAmount, 5000);
     expect(c.payable, 33000);
-    expect(find.textContaining('Shipment + 5000'), findsWidgets);
+    expect(find.textContaining('Shipment + ${money.moneyLabel(5000, 'Rp')}'), findsWidgets);
 
     await tester.tap(find.byTooltip('Cancel shipment'));
     await tester.pumpAndSettle();
@@ -150,20 +168,27 @@ void main() {
     expect(c.payable, 28000);
   });
 
-  testWidgets('shipment step rejects a non-numeric / negative amount', (tester) async {
+  testWidgets('shipment amount field refuses junk and groups thousands', (tester) async {
     final c = _controller();
     await tester.pumpWidget(MaterialApp(theme: PosTheme.theme(), home: PaymentScreen(controller: c)));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byKey(const Key('shipment-amount')), '-50');
+    // Letters never become an amount: the field stays empty and nothing is set.
+    await tester.enterText(find.byKey(const Key('shipment-amount')), 'abc');
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(find.byKey(const Key('shipment-amount'))).controller!.text, '');
     await tester.tap(find.text('Add'));
     await tester.pumpAndSettle();
     expect(c.shipment, isNull);
     expect(c.payable, 28000);
 
-    await tester.enterText(find.byKey(const Key('shipment-amount')), 'abc');
+    // A grouped amount is DISPLAY only — the value stays a plain number.
+    await tester.enterText(find.byKey(const Key('shipment-amount')), '1000');
     await tester.pumpAndSettle();
-    expect(c.shipment, isNull);
+    expect(tester.widget<TextField>(find.byKey(const Key('shipment-amount'))).controller!.text, '1.000');
+    await tester.tap(find.text('Add'));
+    await tester.pumpAndSettle();
+    expect(c.shipment?.amount, 1000, reason: 'grouping must never change the maths');
   });
 
   testWidgets('a blocked shift window disables Settle and shows the reason', (tester) async {

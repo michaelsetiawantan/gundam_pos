@@ -7,10 +7,15 @@
 /// Vocabulary the APK carries (the web config only chooses which entry is used):
 ///
 ///   * **Dialects** ([kEscPosDialects]) — a registry of printer command sets.
-///     `ESC/POS` (Epson) and `ESC/POS-CLONE` (generic clone) are IMPLEMENTED and
-///     really differ (init, cut, supported code pages, capabilities). `STAR`
-///     (Star Line Mode) and `CITIZEN` are DECLARED but NOT implemented: they are
-///     still reported and fall back to the default ESC/POS output — never
+///     `ESC/POS` (Epson) and `ESC/POS-CLONE` (generic clone) really differ
+///     (init, cut, supported code pages, capabilities). `STAR` (Star Line Mode)
+///     is a genuinely DIFFERENT command set (its own init/emphasis/size/align/
+///     feed/cut/code-page commands — `ESC a n` feeds, `ESC GS a n` aligns, `ESC
+///     d n` cuts) and is encoded for real. `CITIZEN` is ESC/POS-compatible: its
+///     documented ESC/POS command set is byte-identical to Epson for every
+///     command we emit, so it shares those bytes and only its code-page table is
+///     dialect-specific. All four are implemented; any code still absent from the
+///     registry falls back to the default ESC/POS output and is reported — never
 ///     pretending to speak a protocol the build cannot.
 ///   * **Code pages** ([kEscPosCodePages]) — character encoding selection via
 ///     `ESC t n`, with a real byte map per page. Characters a page cannot
@@ -20,7 +25,7 @@
 ///     and raster. The dialect supplies the default; the printer config may
 ///     override each one. Every fallback is labelled and reported.
 ///
-/// Commands used (Epson-compatible):
+/// Commands used (Epson-compatible ESC/POS):
 ///   ESC @        initialise
 ///   ESC 2        select default line spacing (generic-clone init)
 ///   ESC t n      code page
@@ -33,12 +38,31 @@
 ///   GS ( k …     QR code (model 2) — real bytes, no dependency
 ///   GS k m n …   barcode (CODE128 / CODE39 / EAN13)
 ///
-/// IMAGE blocks cannot be rasterised without an image dependency, so they emit
-/// a clearly-labelled `[IMAGE <assetKey>]` text line rather than nothing.
+/// Commands used for Star Line Mode (a different command set — see
+/// [kStarLineModeDialect]):
+///   ESC @        initialise (command initialization)
+///   ESC z n      line feed amount (0 = 3 mm, 1 = 4 mm)
+///   ESC GS t n   code page (Star's own selector table)
+///   ESC GS a n   align (0 left / 1 centre / 2 right)
+///   ESC E / ESC F  emphasis on / off
+///   ESC i n1 n2  character expansion (n1 = high ×, n2 = wide ×)
+///   ESC a n      feed n lines
+///   ESC d n      auto-cutter (0 full / 1 partial / 2 feed+full / 3 feed+partial)
+/// Star's own QR (`ESC GS y …`) and barcode (`ESC b … RS`) commands are NOT
+/// emitted by this build, so Star's QR/barcode capability stays false and those
+/// blocks use the labelled text fallback.
+///   GS v 0 …     raster bit-image (1-bit) — see `print_image.dart`
+///
+/// IMAGE blocks print as real `GS v 0` raster bytes when the printer's effective
+/// `supportsRasterImage` is true AND the asset can be resolved and decoded (see
+/// [encodePrintJobWithImages]). Otherwise the block is a clearly-labelled
+/// `[IMAGE <assetKey>]` text line — never silently dropped, always reported.
 library;
 
 import 'package:gundam_pos/logic/print_format_render.dart';
+
 import 'print_broker.dart';
+import 'print_image.dart';
 
 const int _esc = 0x1B;
 const int _gs = 0x1D;
@@ -88,6 +112,13 @@ class EscPosDialect {
     required this.cutFull,
     this.cutPartial,
     required this.codePageSelectors,
+    required this.codePagePrefix,
+    required this.alignPrefix,
+    required this.boldOn,
+    required this.boldOff,
+    required this.sizeNormal,
+    required this.sizeDouble,
+    required this.feedPrefix,
   });
 
   final String code;
@@ -104,9 +135,36 @@ class EscPosDialect {
   /// Partial cut; `null` → the dialect can only full-cut (downgraded + reported).
   final List<int>? cutPartial;
 
-  /// `ESC t n` selector values this dialect honours. A code page whose selector
-  /// is not in this set falls back to CP437 and is reported.
-  final Set<int> codePageSelectors;
+  /// Code-page code → THIS dialect's own selector byte. Star Line Mode numbers
+  /// the code pages differently from Epson and selects them with `ESC GS t n`,
+  /// so the mapping is per dialect rather than a shared `ESC t n` index. A page
+  /// absent from this map has no equivalent on the dialect: the encoder falls
+  /// back to CP437 and reports it rather than sending a wrong selector.
+  final Map<String, int> codePageSelectors;
+
+  /// Bytes before the selector byte of the code-page command
+  /// (Epson/Citizen `ESC t`, Star `ESC GS t`).
+  final List<int> codePagePrefix;
+
+  /// Bytes before the alignment byte (Epson/Citizen `ESC a`, Star `ESC GS a`).
+  final List<int> alignPrefix;
+
+  /// Complete emphasis-ON sequence (Epson/Citizen `ESC E 1`, Star `ESC E`).
+  final List<int> boldOn;
+
+  /// Complete emphasis-OFF sequence (Epson/Citizen `ESC E 0`, Star `ESC F`).
+  final List<int> boldOff;
+
+  /// Complete normal-size sequence (Epson/Citizen `GS ! 0`, Star `ESC i 0 0`).
+  final List<int> sizeNormal;
+
+  /// Complete double width+height sequence (Epson/Citizen `GS ! 0x11`,
+  /// Star `ESC i 1 1`).
+  final List<int> sizeDouble;
+
+  /// Bytes before the line count of the feed command
+  /// (Epson/Citizen `ESC d`, Star `ESC a`).
+  final List<int> feedPrefix;
 }
 
 /// The documented default ESC/POS dialect. Every printer without a recognised
@@ -122,7 +180,17 @@ const EscPosDialect kEpsonEscPosDialect = EscPosDialect(
   initBytes: [_esc, 0x40],
   cutFull: [_gs, 0x56, 0x00],
   cutPartial: [_gs, 0x56, 0x01],
-  codePageSelectors: {0, 1, 2, 3, 4, 5, 16, 17, 18, 19},
+  codePageSelectors: {
+    'CP437': 0, 'KATAKANA': 1, 'CP850': 2, 'CP860': 3, 'CP863': 4, 'CP865': 5,
+    'CP1252': 16, 'CP866': 17, 'CP852': 18, 'CP858': 19,
+  },
+  codePagePrefix: [_esc, 0x74],
+  alignPrefix: [_esc, 0x61],
+  boldOn: [_esc, 0x45, 0x01],
+  boldOff: [_esc, 0x45, 0x00],
+  sizeNormal: [_gs, 0x21, 0x00],
+  sizeDouble: [_gs, 0x21, 0x11],
+  feedPrefix: [_esc, 0x64],
 );
 
 /// Generic clone ESC/POS (Xprinter/Gainscha/cheap 58 mm BLE printers). Differs
@@ -139,31 +207,103 @@ const EscPosDialect kGenericCloneDialect = EscPosDialect(
   initBytes: [_esc, 0x40, _esc, 0x32],
   cutFull: [_gs, 0x56, 0x42, 0x00],
   cutPartial: null,
-  codePageSelectors: {0, 2, 17, 18, 19},
+  codePageSelectors: {'CP437': 0, 'CP850': 2, 'CP866': 17, 'CP852': 18, 'CP858': 19},
+  codePagePrefix: [_esc, 0x74],
+  alignPrefix: [_esc, 0x61],
+  boldOn: [_esc, 0x45, 0x01],
+  boldOff: [_esc, 0x45, 0x00],
+  sizeNormal: [_gs, 0x21, 0x00],
+  sizeDouble: [_gs, 0x21, 0x11],
+  feedPrefix: [_esc, 0x64],
 );
 
-/// Star Line Mode — DECLARED, not implemented (different command set entirely).
+/// Star Line Mode — a genuinely different command set (Star Micronics "STAR
+/// Line Mode Command Specifications"), NOT an ESC/POS alias. Every byte below is
+/// from that spec:
+///   * init `ESC @` (command initialization) + `ESC z 1` — Star's line feed
+///     amount is a memory-switch setting, so pin it to the documented 4 mm (the
+///     Star value nearest ESC/POS's 1/6" ≈ 4.23 mm) for deterministic output;
+///   * emphasis `ESC E` (on) / `ESC F` (off) — note: NO count byte, unlike
+///     ESC/POS `ESC E n`;
+///   * size `ESC i n1 n2` (n1 = high ×, n2 = wide ×) — `1 1` is double w+h;
+///   * align `ESC GS a n` (Star's `ESC a n` is NOT alignment — it feeds paper);
+///   * feed `ESC a n` (n lines);
+///   * cut `ESC d n` (0 full at position, 1 partial at position; 2/3 feed to the
+///     cut position first) — Star's cutter, not Epson's `GS V`;
+///   * code page `ESC GS t n` with Star's OWN selector numbers.
+///
+/// Star's own 2-D/1-D code commands (`ESC GS y …` QR, `ESC b … RS` barcode) are
+/// deliberately NOT emitted by this build, so QR / barcode capability is false
+/// and those blocks fall back to the labelled text form rather than sending
+/// Epson `GS ( k` / `GS k` bytes a Star printer would misread.
 const EscPosDialect kStarLineModeDialect = EscPosDialect(
   code: 'STAR',
   label: 'Star Line Mode',
-  implemented: false,
-  capabilities: EscPosCapabilities(nativeQr: false, nativeBarcode: false, cutter: false, raster: false),
-  initBytes: [],
-  cutFull: [],
-  cutPartial: null,
-  codePageSelectors: {},
+  implemented: true,
+  // Cutter is real (`ESC d n`). QR/barcode are false (see above); raster is
+  // false too: no Star raster bytes are emitted.
+  capabilities: EscPosCapabilities(nativeQr: false, nativeBarcode: false, cutter: true, raster: false),
+  initBytes: [_esc, 0x40, _esc, 0x7A, 0x01],
+  cutFull: [_esc, 0x64, 0x00],
+  cutPartial: [_esc, 0x64, 0x01],
+  // Star's own `ESC GS t n` numbers. CP850 has NO Star equivalent (Star carries
+  // CP858 — a different table — not CP850), so it is deliberately absent: the
+  // encoder falls back to CP437 (n=1) and reports the gap rather than picking a
+  // near-miss page and corrupting accented characters.
+  codePageSelectors: {
+    'CP437': 1, 'KATAKANA': 2, 'CP858': 4, 'CP852': 5, 'CP860': 6, 'CP863': 8,
+    'CP865': 9, 'CP866': 10, 'CP1252': 32,
+  },
+  codePagePrefix: [_esc, 0x1D, 0x74],
+  alignPrefix: [_esc, 0x1D, 0x61],
+  boldOn: [_esc, 0x45],
+  boldOff: [_esc, 0x46],
+  sizeNormal: [_esc, 0x69, 0x00, 0x00],
+  sizeDouble: [_esc, 0x69, 0x01, 0x01],
+  feedPrefix: [_esc, 0x61],
 );
 
-/// Citizen — DECLARED, not implemented (line-mode variants differ from ESC/POS).
+/// Citizen — its documented ESC/POS command set (Citizen "Command Reference").
+/// Citizen's ESC/POS emulation is byte-identical to Epson for every command this
+/// encoder emits, so the sequences below are Epson's and there is no Citizen
+/// deviation to guess at:
+///   * init `ESC @` — same 1B 40 (Citizen's ESC @ restores STANDARD MODE too,
+///     which is the state we print in);
+///   * emphasis `ESC E n`, size `GS ! n`, align `ESC a n`, feed `ESC d n` — all
+///     identical to Epson's documented forms;
+///   * cut `GS V m` — same full (`m=0`) / partial (`m=1`); Citizen adds the
+///     `GS V 65/66 n` feed-to-cut form, which we do not use;
+///   * code page `ESC t n` — Citizen's own table (below). It lists CP1252 at
+///     both 9 and 16, CP866 at 7 and 17, CP852 at 6 and 18; we emit the index
+///     that matches Epson so the stream stays identical.
+///
+/// Documented Citizen nuances deliberately NOT turned into bytes here, because
+/// neither changes the byte we send: `ESC a n` (align) and `GS V` (cut) are only
+/// honoured at the start of a line (the encoder emits both at line start), and
+/// Citizen's `ESC 2` may follow MSW5-2 (3.75 mm) instead of forcing 1/6" on newer
+/// models — we never emit `ESC 2` for Citizen.
 const EscPosDialect kCitizenDialect = EscPosDialect(
   code: 'CITIZEN',
   label: 'Citizen',
-  implemented: false,
-  capabilities: EscPosCapabilities(nativeQr: false, nativeBarcode: false, cutter: false, raster: false),
-  initBytes: [],
-  cutFull: [],
-  cutPartial: null,
-  codePageSelectors: {},
+  implemented: true,
+  // Citizen documents native QR (`GS ( k`, cn=49 fn=65/67/69/80/81 — exactly the
+  // model-2 byte form this encoder emits), native barcode (`GS k`), a real
+  // cutter and raster support.
+  capabilities: EscPosCapabilities(nativeQr: true, nativeBarcode: true, cutter: true, raster: true),
+  initBytes: [_esc, 0x40],
+  cutFull: [_gs, 0x56, 0x00],
+  cutPartial: [_gs, 0x56, 0x01],
+  codePageSelectors: {
+    'CP437': 0, 'KATAKANA': 1, 'CP850': 2, 'CP860': 3, 'CP863': 4, 'CP865': 5,
+    'CP1252': 16, 'CP866': 17, 'CP852': 18, 'CP858': 19,
+  },
+  codePagePrefix: [_esc, 0x74],
+  alignPrefix: [_esc, 0x61],
+  boldOn: [_esc, 0x45, 0x01],
+  boldOff: [_esc, 0x45, 0x00],
+  sizeNormal: [_gs, 0x21, 0x00],
+  sizeDouble: [_gs, 0x21, 0x11],
+  feedPrefix: [_esc, 0x64],
 );
 
 /// The whole dialect vocabulary the APK carries, by canonical code.
@@ -557,6 +697,8 @@ class EscPosEncode {
     this.qrFallbacks = 0,
     this.barcodeFallbacks = 0,
     this.skippedImages = 0,
+    this.rasterImages = 0,
+    this.placeholderImages = 0,
     this.cutEmitted = false,
     this.warnings = const [],
   });
@@ -596,6 +738,13 @@ class EscPosEncode {
   /// IMAGE blocks skipped for lack of raster support.
   final int skippedImages;
 
+  /// IMAGE blocks emitted as real `GS v 0` raster bytes.
+  final int rasterImages;
+
+  /// IMAGE blocks that fell back to a labelled placeholder (raster-capable
+  /// printer, but the asset was missing/unreadable/undecodable).
+  final int placeholderImages;
+
   /// Whether a cutter command reached the stream.
   final bool cutEmitted;
 
@@ -627,6 +776,10 @@ class EscPosEncoder {
   EscPosCodePage? _requestedPage;
   bool _codePageKnown = true;
   bool _codePageSupportedByDialect = true;
+
+  /// The selector byte to emit for [_codePage] in this dialect's code-page
+  /// command (the dialect's own numbering, not the Epson `ESC t n` index).
+  int _codePageSelector = 0;
   int _transliterated = 0;
   int _substituted = 0;
 
@@ -648,45 +801,56 @@ class EscPosEncoder {
     return this;
   }
 
-  /// ESC t n — select a raw code page index. Prefer [selectCodePage], which
+  /// Select a raw code page index using the dialect's code-page command
+  /// (Epson/Citizen `ESC t n`, Star `ESC GS t n`). Prefer [selectCodePage], which
   /// resolves the configured code and the dialect's supported set.
   EscPosEncoder codePage(int n) {
-    _b.addAll([_esc, 0x74, n & 0xFF]);
+    _b.addAll([...dialectSpec.codePagePrefix, n & 0xFF]);
     return this;
   }
 
   /// Resolve the configured code page (tolerant: absent → CP437, unknown →
-  /// CP437, unsupported by the dialect → CP437) and emit its `ESC t n`
-  /// selector. Never throws.
+  /// CP437, unsupported by the dialect → CP437) and emit its selector in the
+  /// dialect's code-page command. Never throws.
   EscPosEncoder selectCodePage(String? raw) {
     _applyCodePage(resolveCodePage(raw));
-    _b.addAll([_esc, 0x74, (_codePage.selector ?? 0) & 0xFF]);
+    _b.addAll([...dialectSpec.codePagePrefix, _codePageSelector & 0xFF]);
     return this;
   }
 
-  /// ESC a n — 0 left, 1 centre, 2 right (identical across ESC/POS dialects).
+  /// Align — 0 left, 1 centre, 2 right. Epson/Citizen `ESC a n`; Star
+  /// `ESC GS a n` (Star's `ESC a n` feeds paper, not aligns it).
   EscPosEncoder align(int n) {
-    _b.addAll([_esc, 0x61, n.clamp(0, 2)]);
+    _b.addAll([...dialectSpec.alignPrefix, n.clamp(0, 2)]);
     return this;
   }
 
-  /// ESC E n — bold on/off.
+  /// Emphasis on/off. Epson/Citizen `ESC E n`; Star `ESC E` / `ESC F`.
   EscPosEncoder bold(bool on) {
-    _b.addAll([_esc, 0x45, on ? 1 : 0]);
+    _b.addAll(on ? dialectSpec.boldOn : dialectSpec.boldOff);
     return this;
   }
 
-  /// GS ! n — character size. Use [doubleSize] / [normalSize].
+  /// Character size as raw ESC/POS `GS ! n`. This is the ESC/POS form only —
+  /// Star Line Mode has no `GS !` and expresses size with `ESC i n1 n2`, so use
+  /// [doubleSize] / [normalSize], which are dialect-aware.
   EscPosEncoder size(int n) {
     _b.addAll([_gs, 0x21, n & 0xFF]);
     return this;
   }
 
-  /// GS ! 0x11 — double width AND height (the CONTRACT `size: DOUBLE`).
-  EscPosEncoder doubleSize() => size(0x11);
+  /// Double width AND height (the CONTRACT `size: DOUBLE`):
+  /// `GS ! 0x11` on Epson/Citizen, `ESC i 1 1` on Star.
+  EscPosEncoder doubleSize() {
+    _b.addAll(dialectSpec.sizeDouble);
+    return this;
+  }
 
-  /// GS ! 0x00 — normal size.
-  EscPosEncoder normalSize() => size(0x00);
+  /// Normal size: `GS ! 0x00` on Epson/Citizen, `ESC i 0 0` on Star.
+  EscPosEncoder normalSize() {
+    _b.addAll(dialectSpec.sizeNormal);
+    return this;
+  }
 
   /// Raw text with no trailing feed, encoded with the active code page.
   EscPosEncoder raw(String text) {
@@ -701,22 +865,33 @@ class EscPosEncoder {
     return this;
   }
 
-  /// ESC d n — print and feed n lines.
+  /// Print and feed n lines. Epson/Citizen `ESC d n`; Star `ESC a n` (Star's
+  /// `ESC d n` is the auto-cutter, so the two commands swap roles).
   EscPosEncoder feed([int lines = 1]) {
-    _b.addAll([_esc, 0x64, lines.clamp(0, 255)]);
+    _b.addAll([...dialectSpec.feedPrefix, lines.clamp(0, 255)]);
     return this;
   }
 
   /// Cut. The dialect supplies the byte sequence; a dialect that cannot
   /// partial-cut is downgraded to its full cut.
+  /// Kick the cash drawer (ESC p m t1 t2). Standard pulse: pin 2, ~100 ms on /
+  /// ~500 ms off — the sequence every RJ11 drawer expects.
+  EscPosEncoder pulse() {
+    // Standard ESC/POS drawer pulse (pin 2, ~100ms on / ~500ms off).
+    _b.addAll(const [0x1B, 0x70, 0x00, 0x19, 0xFA]);
+    return this;
+  }
+
   EscPosEncoder cut({bool partial = false}) {
     final seq = (partial ? dialectSpec.cutPartial : null) ?? dialectSpec.cutFull;
     if (seq.isNotEmpty) _b.addAll(seq);
     return this;
   }
 
-  /// Real QR code (Epson GS ( k, model 2, EC level L). [sizeMm] picks a module
-  /// size; the printer does the encoding.
+  /// Real QR code (ESC/POS `GS ( k`, model 2, EC level L). [sizeMm] picks a
+  /// module size; the printer does the encoding. Star Line Mode's own QR
+  /// commands are not emitted by this build, so its capability gates this off
+  /// and [qrTextFallback] is used instead.
   EscPosEncoder qr(String data, {int sizeMm = 20}) {
     if (data.isEmpty) return this;
     final payload = _encode(data);
@@ -734,17 +909,20 @@ class EscPosEncoder {
   /// value is never silently dropped.
   EscPosEncoder qrTextFallback(String data) => line('[QR $data]');
 
-  /// Barcode via GS k. CODE128 (default), CODE39 and EAN13 are mapped; anything
-  /// else falls back to a labelled text line so the value is never lost.
+  /// Barcode via `GS k`. CODE128 (default), CODE39 and EAN13 are mapped; anything
+  /// else falls back to a labelled text line so the value is never lost. Star
+  /// Line Mode's own `ESC b` command is not emitted by this build, so its
+  /// capability gates this off and [barcodeTextFallback] is used instead.
   EscPosEncoder barcode(String data, {String? symbology}) {
     if (data.isEmpty) return this;
-    final m = switch ((symbology ?? 'CODE128').toUpperCase()) {
+    final sym = (symbology ?? 'CODE128').toUpperCase();
+    final m = switch (sym) {
       'CODE128' => 73,
       'CODE39' => 69,
       'EAN13' => 67,
       _ => null,
     };
-    if (m == null) return line('[BARCODE ${symbology ?? 'UNKNOWN'}] $data');
+    if (m == null) return line('[BARCODE $sym] $data');
     final payload = _encode(data);
     final n = payload.length.clamp(1, 255);
     _b.addAll([_gs, 0x6B, m, n, ...payload]);
@@ -762,14 +940,31 @@ class EscPosEncoder {
   /// IMAGE on a printer with no raster capability → skipped, labelled.
   EscPosEncoder imageSkipped(String assetKey) => line('[IMAGE $assetKey skipped: no raster support]');
 
+  /// Appends a pre-encoded raster block (a full `GS v 0` command from
+  /// [encodeRasterImage]). The caller owns the decode; see
+  /// [encodePrintJobWithImages] for the async resolution path.
+  EscPosEncoder raster(List<int> gsV0Bytes) {
+    _b.addAll(gsV0Bytes);
+    return this;
+  }
+
   void _applyCodePage(CodePageResolution res) {
     _requestedCodePage = res.requested;
     _requestedPage = res.requested == null ? null : res.page;
     _codePageKnown = res.known;
-    final sel = res.page.selector;
-    final supported = res.known && sel != null && dialectSpec.codePageSelectors.contains(sel);
-    _codePageSupportedByDialect = supported;
-    _codePage = supported ? res.page : kEscPosCodePages[kDefaultCodePage]!;
+    // The dialect's own selector for this page. A page the dialect cannot select
+    // (unknown page, a page with no equivalent on the dialect — Star has no
+    // CP850 — or UTF-8, which has no single-byte encoding at all) falls back to
+    // CP437 and is reported by the caller rather than sending a wrong selector.
+    final sel = res.known ? dialectSpec.codePageSelectors[res.page.code] : null;
+    _codePageSupportedByDialect = sel != null;
+    if (sel != null) {
+      _codePage = res.page;
+      _codePageSelector = sel;
+    } else {
+      _codePage = kEscPosCodePages[kDefaultCodePage]!;
+      _codePageSelector = dialectSpec.codePageSelectors[kDefaultCodePage] ?? 0;
+    }
   }
 
   /// Active code page → bytes. Never emits a byte the page cannot represent:
@@ -804,7 +999,7 @@ class EscPosEncoder {
   }
 
   /// Everything the encoder decided, for honest reporting by the caller.
-  EscPosEncode result({List<String> warnings = const [], int qrFallbacks = 0, int barcodeFallbacks = 0, int skippedImages = 0, bool cutEmitted = false}) =>
+  EscPosEncode result({List<String> warnings = const [], int qrFallbacks = 0, int barcodeFallbacks = 0, int skippedImages = 0, int rasterImages = 0, int placeholderImages = 0, bool cutEmitted = false}) =>
       EscPosEncode(
         bytes: bytes,
         dialect: dialect,
@@ -818,10 +1013,17 @@ class EscPosEncoder {
         qrFallbacks: qrFallbacks,
         barcodeFallbacks: barcodeFallbacks,
         skippedImages: skippedImages,
+        rasterImages: rasterImages,
+        placeholderImages: placeholderImages,
         cutEmitted: cutEmitted,
         warnings: warnings,
       );
 }
+
+/// Resolves an IMAGE block's `assetKey` (and its declared `maxHeightMm`) to an
+/// already-encoded raster, or null to fall back to the labelled placeholder.
+/// Synchronous on purpose: the async decode belongs to [encodePrintJobWithImages].
+typedef RasterLookup = RasterImage? Function(String assetKey, int? maxHeightMm);
 
 /// Encode a rendered [job] as one ESC/POS byte stream: the printer is reset and
 /// configured, text lines and graphics entries are interleaved at their
@@ -832,7 +1034,13 @@ class EscPosEncoder {
 /// unknown or declared-but-unimplemented dialect still encodes with the default
 /// and is reported. The code page comes from `job.printer.codePage` (absent →
 /// CP437). Capabilities come from the dialect unless the printer overrides them.
-EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm}) {
+///
+/// [rasterLookup] resolves an IMAGE block's `assetKey` to an already-encoded
+/// raster (see [encodeRasterImage]); null → the labelled placeholder. This keeps
+/// encoding synchronous and pure: decoding happens in [encodePrintJobWithImages],
+/// which owns the async seam. With no IMAGE blocks the output is byte-identical
+/// to the text-only path.
+EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm, RasterLookup? rasterLookup}) {
   final dialect = normalizeDialect(job.printer.dialect);
   final encoder = EscPosEncoder(
     widthMm: widthMm ?? job.printer.widthMm,
@@ -853,11 +1061,17 @@ EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm}) {
 
   final entries = [...job.entries]..sort((a, b) => a.atLine.compareTo(b.atLine));
   var skippedImages = 0;
+  var rasterImages = 0;
+  var placeholderImages = 0;
   var qrFallbacks = 0;
   var barcodeFallbacks = 0;
+  final rasterWarnings = <String>[];
   var ei = 0;
   void emit(PrintableEntry e) {
     switch (e.kind) {
+      case PrintableKind.pulse:
+        encoder.pulse();
+        break;
       case PrintableKind.qr:
         if (nativeQr) {
           encoder.qr(e.content, sizeMm: e.sizeMm ?? 20);
@@ -879,10 +1093,18 @@ EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm}) {
         if (!raster) {
           encoder.imageSkipped(key);
           skippedImages++;
+          break;
+        }
+        // Raster-capable: emit real GS v 0 bytes when the asset resolved and
+        // decoded; otherwise a labelled placeholder (never a silent drop).
+        final resolved = rasterLookup?.call(key, e.maxHeightMm);
+        if (resolved != null) {
+          encoder.raster(resolved.bytes);
+          rasterImages++;
+          rasterWarnings.addAll(resolved.warnings);
         } else {
-          // Raster needs an image dependency the POS deliberately avoids; the
-          // block is labelled so the value is never silently dropped.
           encoder.imagePlaceholder(key);
+          placeholderImages++;
         }
         break;
     }
@@ -940,6 +1162,13 @@ EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm}) {
   if (skippedImages > 0) {
     warnings.add('$skippedImages image block(s) skipped — no raster support.');
   }
+  if (placeholderImages > 0) {
+    warnings.add(
+      '$placeholderImages image block(s) rendered as a labelled placeholder — '
+      'the asset was missing, unreadable or not an image.',
+    );
+  }
+  warnings.addAll(rasterWarnings);
   if (!cutter) {
     warnings.add('no cutter reported for this dialect/printer — cut command skipped.');
   }
@@ -949,9 +1178,51 @@ EscPosEncode encodePrintJobDetailed(PrintJob job, {int? widthMm}) {
     qrFallbacks: qrFallbacks,
     barcodeFallbacks: barcodeFallbacks,
     skippedImages: skippedImages,
+    rasterImages: rasterImages,
+    placeholderImages: placeholderImages,
     cutEmitted: cutEmitted,
   );
 }
 
 /// Convenience: just the bytes (default ESC/POS dialect, documented fallback).
 List<int> encodePrintJob(PrintJob job, {int? widthMm}) => encodePrintJobDetailed(job, widthMm: widthMm).bytes;
+
+/// Encode [job] with real IMAGE rasters: resolve each IMAGE block's `assetKey`
+/// through [source], decode it with [decoder] (Flutter's built-in codec by
+/// default), scale/dither/pack to the printable width, then hand the encoded
+/// rasters to the synchronous [encodePrintJobDetailed].
+///
+/// Never throws and never blocks a sale: an unresolvable, unreadable or
+/// undecodable asset (or a printer without raster support) leaves the labelled
+/// placeholder + a warning. This is the one entry point a caller needs to wire —
+/// the transports keep calling the sync [encodePrintJob].
+Future<EscPosEncode> encodePrintJobWithImages(
+  PrintJob job, {
+  required PrintImageSource source,
+  PrintImageDecoder decoder = const FlutterPrintImageDecoder(),
+  int? widthMm,
+}) async {
+  final effectiveWidth = widthMm ?? job.printer.widthMm;
+  final rasters = <String, RasterImage>{};
+  if (job.printer.supportsRasterImage) {
+    for (final e in job.entries) {
+      if (e.kind != PrintableKind.image) continue;
+      final key = e.assetKey ?? e.content;
+      if (key.isEmpty || rasters.containsKey(key)) continue;
+      final raw = await source.bytesFor(key);
+      if (raw == null) continue; // missing/unreadable → placeholder + warning
+      final bitmap = await decoder.decode(raw);
+      if (bitmap == null) continue; // not an image → placeholder + warning
+      rasters[key] = encodeRasterImage(
+        bitmap,
+        targetWidthDots: rasterWidthDots(effectiveWidth),
+        maxHeightMm: e.maxHeightMm,
+      );
+    }
+  }
+  return encodePrintJobDetailed(
+    job,
+    widthMm: widthMm,
+    rasterLookup: (key, _) => rasters[key],
+  );
+}

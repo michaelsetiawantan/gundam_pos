@@ -28,6 +28,8 @@
 /// ```
 library;
 
+import 'dart:math' as math;
+
 import 'package:gundam_pos/logic/money.dart' as money;
 
 import 'print_format.dart';
@@ -37,7 +39,15 @@ import 'print_format.dart';
 int cellsForWidthMm(int widthMm) => widthMm >= 80 ? 48 : 32;
 
 /// Kind of non-text block the transport layer must render natively.
-enum PrintableKind { qr, barcode, image }
+enum PrintableKind {
+  qr,
+  barcode,
+  image,
+  /// Cash-drawer kick (ESC p): a non-printing instruction that pops the drawer
+  /// wired to the receipt printer. It rides the SAME job/queue/retry path as
+  /// text and graphics, so a reprint or an offline queue behaves identically.
+  pulse,
+}
 
 /// A structured, non-text print instruction (QR/BARCODE/IMAGE). [atLine] is the
 /// index in [PrintRenderResult.lines] where it sits in the block flow, so the
@@ -71,6 +81,46 @@ class PrintRenderResult {
   final List<PrintableEntry> entries;
 }
 
+/// Ticket types whose tickets are INTERNAL (kitchen / label): they must NEVER
+/// carry money — no unit price, line total, subtotal, tax or payment. Enforced
+/// here at RENDER (not only in the stored data), so a wrongly-published format
+/// with `NAME_QTY_PRICE` / `MONEY_LINES` still can't leak prices to the kitchen.
+const Set<String> kInternalTicketTypes = {
+  'CAPTAIN_ORDER',
+  'BEV_LABEL',
+  'CANCELED_ORDER',
+};
+
+bool isInternalTicketType(String type) =>
+    kInternalTicketTypes.contains(type.toUpperCase());
+
+/// Every token that carries a MONEY value (registry money vocabulary + the
+/// renderer's short aliases). On an internal ticket these are forced empty and
+/// any block that prints money from item/payment rows is skipped.
+const Set<String> kMoneyTokens = {
+  'subtotal',
+  'discount_amount', 'discount',
+  'voucher_amount', 'voucher',
+  'vat_amount', 'vat',
+  'sc_amount', 'sc',
+  'shipment_amount', 'shipment',
+  'rounding_delta', 'rounding',
+  'tips_amount', 'tips',
+  'gross_revenue',
+  'total',
+  'paid_amount', 'paid',
+  'change',
+  'item_price', 'item_line_total', 'modifier_price',
+  'payment_amount', 'payment_tendered',
+  'refund_amount',
+  'starting_housebank', 'closing_housebank', 'cash_received',
+  'cash_variance', 'payout_amount', 'total_sales',
+};
+
+/// Money-token name test tolerating braces / a leading `{`.
+bool isMoneyName(String name) =>
+    kMoneyTokens.contains(name.replaceAll(RegExp(r'[{}]'), '').trim().toLowerCase());
+
 /// Default money-line labels (CONTRACT §2 lists only the line keys, not labels,
 /// so the POS owns the canonical captions).
 const Map<String, String> kMoneyLineLabels = {
@@ -95,11 +145,25 @@ PrintRenderResult renderPrintFormat({
   int? widthMm,
 }) {
   final baseCells = cellsForWidthMm(widthMm ?? format.widthMm);
+  final tokens = _normalizeTokens(ticketPayload['tokens']);
+  // Internal ticket if EITHER side says so — a BILL-typed format used to render
+  // a captain order (or vice versa) still gets the kitchen-safe treatment.
+  final internal = isInternalTicketType(format.ticketType) ||
+      isInternalTicketType(_stringify(tokens['ticket_type']));
+  if (internal) {
+    // Force every money token empty: VAR/TEXT/QR/TABLE/MONEY_LINES then resolve
+    // them to nothing (rule 2) instead of printing a price.
+    for (final k in kMoneyTokens) {
+      if (tokens.containsKey(k)) tokens[k] = '';
+    }
+  }
   final ctx = _Ctx(
-    tokens: _normalizeTokens(ticketPayload['tokens']),
+    tokens: tokens,
     items: _rows(ticketPayload['items']),
     payments: _rows(ticketPayload['payments']),
     baseCells: baseCells,
+    internal: internal,
+    currency: _stringify(tokens['currency_label']),
   );
   final out = _Out();
   _renderBlocks(format.blocks, ctx, out);
@@ -116,6 +180,8 @@ class _Ctx {
     required this.items,
     required this.payments,
     required this.baseCells,
+    this.internal = false,
+    this.currency = '',
   });
 
   final Map<String, Object?> tokens;
@@ -123,10 +189,22 @@ class _Ctx {
   final List<Map<String, dynamic>> payments;
   final int baseCells;
 
+  /// Internal (kitchen/label) ticket → never print money.
+  final bool internal;
+
+  /// Currency label from the Web POS config (`{currency_label}`).
+  final String currency;
+
   /// A scoped copy sharing tokens/payments but with a different item list
   /// (used by BATCH grouping).
-  _Ctx withItems(List<Map<String, dynamic>> items) =>
-      _Ctx(tokens: tokens, items: items, payments: payments, baseCells: baseCells);
+  _Ctx withItems(List<Map<String, dynamic>> items) => _Ctx(
+        tokens: tokens,
+        items: items,
+        payments: payments,
+        baseCells: baseCells,
+        internal: internal,
+        currency: currency,
+      );
 }
 
 class _Out {
@@ -170,7 +248,7 @@ String _resolve(String input, Map<String, Object?> tokens, {Map<String, Object?>
 String _stringify(Object? v) => v?.toString() ?? '';
 
 /// Apply one or more comma-separated format options (CONTRACT §3 safe set).
-String _applyFormat(String value, String? format) {
+String _applyFormat(String value, String? format, {required String currency}) {
   if (format == null || format.isEmpty) return value;
   var out = value;
   for (final raw in format.split(',')) {
@@ -180,7 +258,7 @@ String _applyFormat(String value, String? format) {
     final arg = colon >= 0 ? opt.substring(colon + 1) : '';
     switch (name) {
       case 'money':
-        out = _money(double.tryParse(out));
+        out = _moneyLabel(double.tryParse(out), currency);
         break;
       case 'decimal':
         break; // already plain decimal text
@@ -208,8 +286,10 @@ String _applyFormat(String value, String? format) {
   return out;
 }
 
-/// Money: 2 decimals, no thousands separator — reuses `money.round2`.
-String _money(double? v) => money.round2(v ?? 0).toStringAsFixed(2);
+/// Money display: `<label>. 1.234,56` (server currency label, dot-grouped
+/// thousands, ALWAYS two decimals) — the ONE formatter every money figure goes
+/// through. See [money.moneyLabel] for the canonical rule.
+String _moneyLabel(double? v, String currency) => money.moneyLabel(v ?? 0, currency);
 
 String _date(String raw, {required bool withTime}) {
   final dt = DateTime.tryParse(raw);
@@ -352,9 +432,11 @@ void _emitVar(PrintBlock b, _Ctx ctx, _Out out, int cells) {
   final param = b.param ?? '';
   final name = param.replaceAll(RegExp(r'[{}]'), '').trim();
   if (name.isEmpty) return;
+  // Internal ticket → money tokens were forced empty above; belt-and-braces.
+  if (ctx.internal && isMoneyName(name)) return;
   final String value;
   if (ctx.tokens.containsKey(name)) {
-    value = _applyFormat(_stringify(ctx.tokens[name]), b.format);
+    value = _applyFormat(_stringify(ctx.tokens[name]), b.format, currency: ctx.currency);
   } else {
     value = '{$name}'; // unknown token → literal (rule 1)
   }
@@ -367,14 +449,20 @@ void _emitVar(PrintBlock b, _Ctx ctx, _Out out, int cells) {
 void _emitItems(PrintBlock b, _Ctx ctx, _Out out, int cells) {
   final nameMax = b.nameMax ?? 20;
   final rows = <String>[];
-  for (final it in ctx.items) {
+
+  /// One item's rows (shared by the flat and the grouped form so the two can
+  /// never drift).
+  void emitItem(Map<String, Object?> it) {
     final name = _stringify(it['name']);
     final qty = _stringify(it['qty'] ?? 1);
     final price = _asNum(it['price']) ?? 0;
     final lineTotal = _asNum(it['lineTotal']) ?? price * (_asNum(it['qty']) ?? 1);
-    switch (b.columns) {
+    // Internal ticket (kitchen/label): NAME + QTY only — never a price column,
+    // whatever the published format asked for.
+    final columns = ctx.internal ? ItemColumns.nameQty : b.columns;
+    switch (columns) {
       case ItemColumns.nameQtyPrice:
-        _itemNameQtyPrice(rows, name, qty, _money(lineTotal), cells, nameMax, b.wrap);
+        _itemNameQtyPrice(rows, name, qty, _moneyLabel(lineTotal, ctx.currency), cells, nameMax, b.wrap);
         break;
       case ItemColumns.nameQty:
         final nameW = (cells - 3).clamp(1, cells);
@@ -384,17 +472,55 @@ void _emitItems(PrintBlock b, _Ctx ctx, _Out out, int cells) {
       case ItemColumns.full:
         final qtyName = '$qty x $name';
         rows.add(_fit(_clip(qtyName, cells), cells - 12, BlockAlign.left) +
-            _fit(_money(lineTotal), 12, BlockAlign.right));
+            _fit(_moneyLabel(lineTotal, ctx.currency), 12, BlockAlign.right));
         for (final m in _rows(it['modifiers'])) {
           final mn = '  + ${_stringify(m['name'])}';
-          if (b.withPrice) {
+          final mp = _asNum(m['price']) ?? 0;
+          // Free modifier → name only (price already in the parent line).
+          if (b.withPrice && money.round2(mp) != 0) {
             rows.add(_fit(mn, cells - 12, BlockAlign.left) +
-                _fit(_money(_asNum(m['price'])), 12, BlockAlign.right));
+                _fit(_moneyLabel(mp, ctx.currency), 12, BlockAlign.right));
           } else {
             rows.add(_fit(mn, cells, BlockAlign.left));
           }
         }
         break;
+    }
+    // Grouped mode: nest the modifiers under their own item (a flat
+    // MODIFIER_LIST at the ticket end detaches them from the item).
+    if (b.groupByMenu && b.withModifiers && b.columns != ItemColumns.full) {
+      for (final m in _rows(it['modifiers'])) {
+        rows.add(_fit('  + ${_stringify(m['name'])}', cells, BlockAlign.left));
+      }
+    }
+  }
+
+  if (b.groupByMenu) {
+    // ONE ticket can carry several menus when stations are merged; each menu gets
+    // its own rule so the kitchen still separates them. Items keep first-seen order.
+    final order = <String>[];
+    final groups = <String, List<Map<String, Object?>>>{};
+    for (final it in ctx.items) {
+      final menu = _stringify(it['menu']);
+      if (!groups.containsKey(menu)) {
+        groups[menu] = [];
+        order.add(menu);
+      }
+      groups[menu]!.add(it);
+    }
+    final ch = b.menuChar.isEmpty ? '-' : b.menuChar[0];
+    for (final menu in order) {
+      if (menu.isNotEmpty) {
+        final head = '$ch$ch ${menu.toUpperCase()} ';
+        rows.add(head.length >= cells ? head.substring(0, cells) : head + ch * (cells - head.length));
+      }
+      for (final it in groups[menu]!) {
+        emitItem(it);
+      }
+    }
+  } else {
+    for (final it in ctx.items) {
+      emitItem(it);
     }
   }
   _emitBlockLines(out, rows);
@@ -403,7 +529,11 @@ void _emitItems(PrintBlock b, _Ctx ctx, _Out out, int cells) {
 void _itemNameQtyPrice(
     List<String> rows, String name, String qty, String money, int cells, int nameMax, bool wrap) {
   const qtyW = 3;
-  const priceW = 12;
+  // The money column keeps a visible GAP after the qty (a crowded qty/amount
+  // pair is unreadable on thermal paper) and grows with the labelled text
+  // (`Rp. 45.000,00`) so it is never clipped; the name loses the space instead.
+  const moneyGap = 2;
+  final priceW = money.length + moneyGap < 14 ? 14 : money.length + moneyGap;
   final nameW = (cells - qtyW - priceW).clamp(1, cells);
   final shown = _clip(name, nameMax);
   if (!wrap || shown.length <= nameW) {
@@ -427,12 +557,17 @@ void _itemNameQtyPrice(
 void _emitModifiers(PrintBlock b, _Ctx ctx, _Out out, int cells) {
   final rows = <String>[];
   final indent = ' ' * b.indent;
+  // Internal ticket: modifier NAME only (never a price).
+  final withPrice = ctx.internal ? false : b.withPrice;
   for (final it in ctx.items) {
     for (final m in _rows(it['modifiers'])) {
       final label = '$indent${_stringify(m['name'])}';
-      if (b.withPrice) {
+      final price = _asNum(m['price']) ?? 0;
+      // A free modifier prints NAME ONLY: its price is already inside the
+      // parent item's line price, so a "0.00" column is just noise.
+      if (withPrice && money.round2(price) != 0) {
         final w = (cells - 12).clamp(1, cells);
-        rows.add(_fit(label, w, BlockAlign.left) + _fit(_money(_asNum(m['price'])), 12, BlockAlign.right));
+        rows.add(_fit(label, w, BlockAlign.left) + _fit(_moneyLabel(price, ctx.currency), 12, BlockAlign.right));
       } else {
         rows.add(_fit(label, cells, BlockAlign.left));
       }
@@ -442,28 +577,95 @@ void _emitModifiers(PrintBlock b, _Ctx ctx, _Out out, int cells) {
 }
 
 void _emitMoneyLines(PrintBlock b, _Ctx ctx, _Out out, int cells) {
+  if (ctx.internal) return; // money has no place on a kitchen ticket
   final keys = b.moneyLineKeys.isEmpty ? kMoneyLineLabels.keys.toList() : b.moneyLineKeys;
-  final rows = <String>[];
+
+  // Resolve every line first, so the money column can be sized ONCE for the
+  // block: a million must line up with a thousand (every amount shares the same
+  // left edge), which per-row padding could never guarantee.
+  final entries = <(String, String)>[];
   for (final key in keys) {
+    // Accept both spellings a payload may carry (`discount` / `discount_amount`).
     final token = key.toLowerCase();
-    final raw = ctx.tokens[token];
-    final amount = _asNum(raw) ?? 0;
+    final amount = _asNum(ctx.tokens[token]) ??
+        _asNum(ctx.tokens['${token}_amount']) ??
+        0;
     if (money.round2(amount) == 0) continue; // only non-zero lines print
-    final label = kMoneyLineLabels[key] ?? key;
-    final value = _money(amount);
-    final labelW = (cells - value.length).clamp(1, cells);
-    rows.add(_fit(label, labelW, BlockAlign.left) + value);
+    entries.add((_moneyLineCaption(key, ctx), _moneyLabel(amount, ctx.currency)));
   }
-  _emitBlockLines(out, rows);
+  if (entries.isEmpty) return;
+  _emitBlockLines(out, _alignedMoneyRows(
+    captions: [for (final e in entries) e.$1],
+    money: [for (final e in entries) e.$2],
+    cells: cells,
+  ));
+}
+
+/// Money rows as TWO aligned columns: the currency LABEL ("Rp.") starts at the
+/// same x on every row and the digits end at the same right edge, with a 2-cell
+/// gutter between them. Right-padding the whole "Rp. 1.000,00" as a single cell
+/// made the currency drift right whenever the amount got shorter — the exact
+/// aesthetic complaint from the field.
+List<String> _alignedMoneyRows({
+  required List<String> captions,
+  required List<String> money,
+  required int cells,
+}) {
+  const gap = 2;
+  // Split each ALREADY-RENDERED string, so the layout never re-implements money
+  // formatting (one formatter, one truth).
+  final parts = [for (final m in money) _splitMoney(m)];
+  final curW = parts.map((p) => p.$1.length).fold(0, math.max);
+  final digitW = parts.map((p) => p.$2.length).fold(0, math.max);
+  final capW = (cells - curW - digitW - gap).clamp(1, cells);
+  return [
+    for (var i = 0; i < captions.length; i++)
+      _fit(captions[i], capW, BlockAlign.left) +
+          _fit(parts[i].$1, curW, BlockAlign.left) +
+          ' ' * gap +
+          _fit(parts[i].$2, digitW, BlockAlign.right),
+  ];
+}
+
+/// Split a rendered money string ("Rp. 1.000,00") into (label, digits).
+(String, String) _splitMoney(String text) {
+  final cut = text.indexOf(' ');
+  if (cut < 0) return ('', text);
+  return (text.substring(0, cut), text.substring(cut + 1));
+}
+
+/// Caption for one money line. A discount/voucher prints its NAME too —
+/// `Discount (Happy Hour)` — so the guest can see what was applied.
+String _moneyLineCaption(String key, _Ctx ctx) {
+  final base = kMoneyLineLabels[key] ?? key;
+  final k = key.toUpperCase();
+  if (k == 'DISCOUNT') {
+    final name = _stringify(ctx.tokens['discount_name']).trim();
+    if (name.isNotEmpty) return '$base ($name)';
+  } else if (k == 'VOUCHER') {
+    final name = _stringify(ctx.tokens['voucher_name']).trim();
+    if (name.isNotEmpty) return '$base ($name)';
+  }
+  return base;
 }
 
 void _emitPayments(PrintBlock b, _Ctx ctx, _Out out, int cells) {
+  if (ctx.internal) return; // no payment breakdown on a kitchen ticket
   final rows = <String>[];
+  // Same rule as the money lines: one fixed money column for the whole block.
+  final paid = [
+    for (final p in ctx.payments)
+      (_stringify(p['name'] ?? p['code']), _moneyLabel(_asNum(p['amount']), ctx.currency)),
+  ];
+  if (paid.isNotEmpty) {
+    rows.addAll(_alignedMoneyRows(
+      captions: [for (final e in paid) e.$1],
+      money: [for (final e in paid) e.$2],
+      cells: cells,
+    ));
+  }
   for (final p in ctx.payments) {
-    final name = _stringify(p['name'] ?? p['code']);
-    final value = _money(_asNum(p['amount']));
-    final labelW = (cells - value.length).clamp(1, cells);
-    rows.add(_fit(name, labelW, BlockAlign.left) + value);
+    // (the amounts themselves were laid out above, aligned)
     if (b.showReference) {
       final ref = _stringify(p['reference']);
       if (ref.isNotEmpty) rows.add(_fit('  ref: $ref', cells, BlockAlign.left));
@@ -514,7 +716,10 @@ String _resolveContent(Object? content, _Ctx ctx) {
 }
 
 void _emitTable(PrintBlock b, _Ctx ctx, _Out out, int cells) {
-  final cols = b.tableColumns;
+  // Internal ticket: drop every money column (a price column can't leak).
+  final cols = ctx.internal
+      ? b.tableColumns.where((c) => !isMoneyName(c.param)).toList()
+      : b.tableColumns;
   if (cols.isEmpty) return;
   final widths = _columnWidths(cols, cells);
   final rows = <String>[];
@@ -527,7 +732,8 @@ void _emitTable(PrintBlock b, _Ctx ctx, _Out out, int cells) {
     final cellsVals = <String>[];
     for (final c in cols) {
       final raw = extra.containsKey(c.name) ? extra[c.name] : ctx.tokens[c.name];
-      cellsVals.add(_stringify(raw));
+      // Money columns render through the labelled formatter (never a raw 45000.0).
+      cellsVals.add(isMoneyName(c.param) ? _moneyLabel(_asNum(raw), ctx.currency) : _stringify(raw));
     }
     rows.add(_tableRow(cellsVals, widths, cols.map((c) => c.align).toList()));
   }

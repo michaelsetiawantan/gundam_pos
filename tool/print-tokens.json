@@ -1,0 +1,1188 @@
+{
+  "version": 3,
+  "ticketTypes": [
+    "BILL",
+    "CAPTAIN_ORDER",
+    "BEV_LABEL",
+    "CANCELED_ORDER",
+    "RECEIPT_COPY",
+    "SHIFT_OPEN",
+    "SHIFT_CLOSE",
+    "Z_REPORT"
+  ],
+  "params": [
+    {
+      "token": "store_name",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "store_shortcode",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "store_address",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "store_phone",
+      "type": "text",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "store_social",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "store_instagram",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "store_tiktok",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "store_email",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "outlet_name",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "outlet_timezone",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "currency_label",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "group_name",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "group_shortcode",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "device_label",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "device_shortcode",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "cashier_name",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "pos_client_id",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "receipt_id",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "order_no",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "transacted_at",
+      "type": "datetime",
+      "nullable": false,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "opened_at",
+      "type": "datetime",
+      "nullable": true,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "paid_at",
+      "type": "datetime",
+      "nullable": true,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "table_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "table_number",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "cashier_name_opened_bill",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "cashier_name_closed_bill",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "datetime_closed_bill",
+      "type": "datetime",
+      "nullable": true,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "pax",
+      "type": "int",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "transaction_kind",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "notes",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "guest_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "item_count",
+      "type": "int",
+      "nullable": false,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "item_name",
+      "type": "text",
+      "nullable": false,
+      "format": "truncate",
+      "ticketTypes": [
+        "CAPTAIN_ORDER",
+        "BEV_LABEL"
+      ]
+    },
+    {
+      "token": "item_qty",
+      "type": "int",
+      "nullable": false,
+      "format": "decimal",
+      "ticketTypes": [
+        "CAPTAIN_ORDER",
+        "BEV_LABEL"
+      ]
+    },
+    {
+      "token": "item_price",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "item_line_total",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "modifier_name",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "CAPTAIN_ORDER",
+        "BEV_LABEL"
+      ]
+    },
+    {
+      "token": "modifier_price",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "modifier_qty",
+      "type": "int",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "batch_label",
+      "type": "text",
+      "nullable": true,
+      "format": "uppercase",
+      "ticketTypes": [
+        "CAPTAIN_ORDER",
+        "BEV_LABEL"
+      ]
+    },
+    {
+      "token": "subtotal",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "discount_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "discount_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "voucher_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "voucher_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "vat_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "sc_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "shipment_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "shipment_description",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "rounding_delta",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "tips_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "total",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "paid_amount",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "change",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "payment_type",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "payment_method",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "payment_amount",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "payment_reference",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "payment_tendered",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "split_index",
+      "type": "int",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "ticket_type",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "format_name",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "format_version",
+      "type": "int",
+      "nullable": false,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "printer_name",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "printer_width_mm",
+      "type": "int",
+      "nullable": false,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "print_time",
+      "type": "datetime",
+      "nullable": false,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "reprint_flag",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "copy_label",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "shift_id",
+      "type": "text",
+      "nullable": false,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "shift_open_at",
+      "type": "datetime",
+      "nullable": false,
+      "format": "datetime",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "shift_close_at",
+      "type": "datetime",
+      "nullable": true,
+      "format": "datetime",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "starting_housebank",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "closing_housebank",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "cash_received",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "cash_variance",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "payout_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "total_sales",
+      "type": "money",
+      "nullable": false,
+      "format": "money",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "transaction_count",
+      "type": "int",
+      "nullable": false,
+      "format": "decimal",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "z_report_date",
+      "type": "date",
+      "nullable": false,
+      "format": "date",
+      "ticketTypes": [
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "action_type",
+      "type": "text",
+      "nullable": false,
+      "format": "uppercase",
+      "ticketTypes": [
+        "CANCELED_ORDER",
+        "RECEIPT_COPY"
+      ]
+    },
+    {
+      "token": "canceled_label",
+      "type": "text",
+      "nullable": true,
+      "format": "uppercase",
+      "ticketTypes": [
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "cancel_reason",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "void_reason",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "CANCELED_ORDER",
+        "RECEIPT_COPY"
+      ]
+    },
+    {
+      "token": "refund_amount",
+      "type": "money",
+      "nullable": true,
+      "format": "money",
+      "ticketTypes": [
+        "CANCELED_ORDER",
+        "RECEIPT_COPY"
+      ]
+    },
+    {
+      "token": "refund_reason",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "CANCELED_ORDER",
+        "RECEIPT_COPY"
+      ]
+    },
+    {
+      "token": "approval_status",
+      "type": "text",
+      "nullable": true,
+      "format": "uppercase",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "requester_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "approver_name",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "approval_acted_at",
+      "type": "datetime",
+      "nullable": true,
+      "format": "datetime",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "vat_percent",
+      "type": "decimal",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "sc_percent",
+      "type": "decimal",
+      "nullable": true,
+      "format": "decimal",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "qr_content",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "legal_footer",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "thank_you_message",
+      "type": "text",
+      "nullable": true,
+      "format": "wrap",
+      "ticketTypes": [
+        "BILL",
+        "RECEIPT_COPY",
+        "CANCELED_ORDER"
+      ]
+    },
+    {
+      "token": "custom_1",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "custom_2",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "custom_3",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    },
+    {
+      "token": "custom_4",
+      "type": "text",
+      "nullable": true,
+      "format": "show_if_present",
+      "ticketTypes": [
+        "BILL",
+        "CAPTAIN_ORDER",
+        "BEV_LABEL",
+        "CANCELED_ORDER",
+        "RECEIPT_COPY",
+        "SHIFT_OPEN",
+        "SHIFT_CLOSE",
+        "Z_REPORT"
+      ]
+    }
+  ]
+}

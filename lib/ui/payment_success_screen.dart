@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/ui/theme.dart';
 
 /// P19 — Payment success.
@@ -10,12 +11,16 @@ class PaymentSuccessScreen extends StatelessWidget {
     required this.total,
     this.change = 0,
     this.tipsPending = 0,
+    this.currency = '',
   });
 
   final String receiptId;
   final dynamic total;
   final double change;
   final double tipsPending;
+
+  /// Outlet currency label from the server config (display only).
+  final String currency;
 
   String get _total => total == null ? '—' : (total is num ? _fmt((total as num).toDouble()) : total.toString());
 
@@ -72,5 +77,5 @@ class PaymentSuccessScreen extends StatelessWidget {
         ]),
       );
 
-  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+  String _fmt(double v) => money.moneyLabel(v, currency);
 }

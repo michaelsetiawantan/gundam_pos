@@ -1,7 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
+import 'package:gundam_pos/services/print_image.dart';
 import 'package:gundam_pos/services/print_routing.dart';
 
 PrintJob _job(
@@ -202,13 +205,24 @@ void main() {
       expect([clone.nativeQr, clone.nativeBarcode, clone.cutter, clone.raster], [false, false, true, false]);
     });
 
-    test('Star and Citizen are declared but NOT implemented (marked unsupported)', () {
+    test('Star and Citizen are implemented, each with its real capability set', () {
       for (final code in ['STAR', 'CITIZEN']) {
         expect(isKnownDialect(code), isTrue, reason: code);
-        expect(isImplementedDialect(code), isFalse, reason: code);
-        expect(kEscPosDialects[code]!.capabilities.nativeQr, isFalse, reason: code);
-        expect(kEscPosDialects[code]!.initBytes, isEmpty, reason: code);
+        expect(isImplementedDialect(code), isTrue, reason: code);
+        expect(kEscPosDialects[code]!.initBytes, isNotEmpty, reason: code);
       }
+      // Star Line Mode is a real dialect with a real cutter (`ESC d n`), but this
+      // build emits no Star QR/barcode bytes, so those stay false and fall back
+      // to the labelled text form.
+      final star = kEscPosDialects['STAR']!.capabilities;
+      expect([star.nativeQr, star.nativeBarcode, star.cutter, star.raster], [false, false, true, false]);
+      // Citizen: QR (`GS ( k`), barcode (`GS k`) and cut (`GS V`) are all its
+      // documented ESC/POS forms.
+      final citizen = kEscPosDialects['CITIZEN']!.capabilities;
+      expect([citizen.nativeQr, citizen.nativeBarcode, citizen.cutter, citizen.raster], [true, true, true, true]);
+      // Every registry dialect is now implemented — the fallback path is only
+      // reachable for codes the registry does not carry.
+      expect(kEscPosDialects.values.every((d) => d.implemented), isTrue);
     });
 
     test('config spellings normalise to registry codes', () {
@@ -241,14 +255,181 @@ void main() {
       expect(clone.dialectImplemented, isTrue);
     });
 
-    test('a declared-but-unimplemented dialect → default ESC/POS bytes + reported', () {
-      final star = encodePrintJobDetailed(_job(['HELLO'], dialect: 'STAR'));
+    test('every registry dialect is implemented — only unknown codes fall back', () {
+      expect(kEscPosDialects.values.where((d) => !d.implemented), isEmpty);
+      // effectiveDialect is the guard that keeps an unknown code honest: it
+      // returns the default ESC/POS spec rather than a pretence.
+      expect(effectiveDialect('ZPL'), same(kEpsonEscPosDialect));
+      expect(effectiveDialect('STAR'), same(kStarLineModeDialect));
+      expect(effectiveDialect('CITIZEN'), same(kCitizenDialect));
+    });
+  });
+
+  group('Star Line Mode — real command bytes (not an ESC/POS alias)', () {
+    EscPosEncoder star() => EscPosEncoder(dialect: 'STAR');
+
+    test('init: ESC @ then ESC z 1 (line feed amount pinned to 4 mm)', () {
+      expect(star().init().bytes, [0x1B, 0x40, 0x1B, 0x7A, 0x01]);
+    });
+
+    test('emphasis: ESC E on, ESC F off — no count byte', () {
+      expect(star().bold(true).bytes, [0x1B, 0x45]);
+      expect(star().bold(false).bytes, [0x1B, 0x46]);
+    });
+
+    test('character size: ESC i n1 n2 (high, wide); 1 1 is double w+h', () {
+      expect(star().doubleSize().bytes, [0x1B, 0x69, 0x01, 0x01]);
+      expect(star().normalSize().bytes, [0x1B, 0x69, 0x00, 0x00]);
+    });
+
+    test('alignment: ESC GS a n (Star ESC a n feeds paper, it does not align)', () {
+      expect(star().align(0).bytes, [0x1B, 0x1D, 0x61, 0x00]);
+      expect(star().align(1).bytes, [0x1B, 0x1D, 0x61, 0x01]);
+      expect(star().align(2).bytes, [0x1B, 0x1D, 0x61, 0x02]);
+    });
+
+    test('feed n lines: ESC a n (ESC d is Star-s cutter, not a feed)', () {
+      expect(star().feed(3).bytes, [0x1B, 0x61, 0x03]);
+    });
+
+    test('cut: ESC d n — full 0, partial 1 (Star-s cutter, not GS V)', () {
+      expect(star().cut().bytes, [0x1B, 0x64, 0x00]);
+      expect(star().cut(partial: true).bytes, [0x1B, 0x64, 0x01]);
+    });
+
+    test('a whole STAR ticket is Star bytes end to end', () {
+      final r = encodePrintJobDetailed(_job(['HELLO'], dialect: 'STAR'));
+      expect(r.dialectImplemented, isTrue);
+      expect(r.dialect, 'STAR');
+      expect(r.bytes, [
+        0x1B, 0x40, 0x1B, 0x7A, 0x01, // ESC @ ESC z 1 (init)
+        0x1B, 0x1D, 0x74, 0x01, // ESC GS t 1 (CP437 on Star)
+        0x1B, 0x1D, 0x61, 0x00, // ESC GS a 0 (left)
+        0x1B, 0x46, // ESC F (emphasis off)
+        0x1B, 0x69, 0x00, 0x00, // ESC i 0 0 (normal size)
+        0x48, 0x45, 0x4C, 0x4C, 0x4F, 0x0A, // HELLO + LF
+        0x1B, 0x61, 0x03, // ESC a 3 (feed 3 lines)
+        0x1B, 0x64, 0x00, // ESC d 0 (full cut)
+      ]);
+      expect(r.warnings, isEmpty);
+    });
+
+    test('code page: Star-s own ESC GS t n selectors', () {
+      expect(star().selectCodePage('CP437').bytes, [0x1B, 0x1D, 0x74, 0x01]);
+      expect(star().selectCodePage('KATAKANA').bytes, [0x1B, 0x1D, 0x74, 0x02]);
+      expect(star().selectCodePage('CP858').bytes, [0x1B, 0x1D, 0x74, 0x04]);
+      expect(star().selectCodePage('CP863').bytes, [0x1B, 0x1D, 0x74, 0x08]);
+      expect(star().selectCodePage('CP866').bytes, [0x1B, 0x1D, 0x74, 0x0A]);
+      expect(star().selectCodePage('CP1252').bytes, [0x1B, 0x1D, 0x74, 0x20]);
+      expect((star()..selectCodePage('CP865')).activeCodePage.code, 'CP865');
+    });
+
+    test('CP850 has NO Star equivalent → CP437 selector 1, reported', () {
+      final r = encodePrintJobDetailed(_job(['X'], dialect: 'STAR', codePage: 'CP850'));
+      expect(r.codePage, 'CP437');
+      expect(r.codePageKnown, isTrue);
+      expect(r.codePageSupportedByDialect, isFalse);
+      expect(_indexOf(r.bytes, [0x1B, 0x1D, 0x74, 0x01]), greaterThanOrEqualTo(0));
+      expect(_indexOf(r.bytes, [0x1B, 0x1D, 0x74, 0x02]), -1); // never Epson-s n=2
+      expect(r.warnings.any((w) => w.contains('not supported by dialect')), isTrue);
+    });
+
+    test('capability gating: no native QR/barcode, but the cutter still fires', () {
+      final r = encodePrintJobDetailed(_job(
+        ['X'],
+        dialect: 'STAR',
+        entries: [
+          PrintableEntry(kind: PrintableKind.qr, atLine: 0, content: 'A'),
+          PrintableEntry(kind: PrintableKind.barcode, atLine: 0, content: '12345', symbology: 'CODE128'),
+        ],
+      ));
+      expect(_indexOf(r.bytes, [0x1D, 0x28, 0x6B]), -1); // no Epson QR into a Star
+      expect(_indexOf(r.bytes, [0x1D, 0x6B]), -1); // no Epson barcode either
+      expect(_indexOf(r.bytes, '[QR A]'.codeUnits), greaterThanOrEqualTo(0));
+      expect(_indexOf(r.bytes, '[BARCODE CODE128] 12345'.codeUnits), greaterThanOrEqualTo(0));
+      expect(r.qrFallbacks, 1);
+      expect(r.barcodeFallbacks, 1);
+      expect(r.cutEmitted, isTrue);
+      expect(r.bytes.sublist(r.bytes.length - 3), [0x1B, 0x64, 0x00]);
+    });
+
+    test('aliases resolve to STAR with byte-identical output', () {
+      for (final raw in const ['STAR', 'STAR-LINE-MODE', 'STARLINE', 'Star Line Mode', 'star/line/mode']) {
+        expect(normalizeDialect(raw), 'STAR', reason: raw);
+        expect(encodePrintJobDetailed(_job(['HELLO'], dialect: raw)).bytes,
+            encodePrintJobDetailed(_job(['HELLO'], dialect: 'STAR')).bytes,
+            reason: raw);
+      }
+    });
+  });
+
+  group('Citizen ESC/POS — its documented command bytes', () {
+    EscPosEncoder citizen() => EscPosEncoder(dialect: 'CITIZEN');
+
+    test('init / emphasis / size / align / feed / cut are Citizen-s forms', () {
+      expect(citizen().init().bytes, [0x1B, 0x40]); // ESC @
+      expect(citizen().bold(true).bytes, [0x1B, 0x45, 0x01]); // ESC E 1
+      expect(citizen().bold(false).bytes, [0x1B, 0x45, 0x00]); // ESC E 0
+      expect(citizen().doubleSize().bytes, [0x1D, 0x21, 0x11]); // GS ! 0x11
+      expect(citizen().normalSize().bytes, [0x1D, 0x21, 0x00]); // GS ! 0
+      expect(citizen().align(1).bytes, [0x1B, 0x61, 0x01]); // ESC a 1
+      expect(citizen().feed(3).bytes, [0x1B, 0x64, 0x03]); // ESC d 3
+      expect(citizen().cut().bytes, [0x1D, 0x56, 0x00]); // GS V 0 full
+      expect(citizen().cut(partial: true).bytes, [0x1D, 0x56, 0x01]); // GS V 1 partial
+    });
+
+    test('code page: Citizen-s ESC t n table', () {
+      expect(citizen().selectCodePage('CP437').bytes, [0x1B, 0x74, 0x00]);
+      expect(citizen().selectCodePage('CP850').bytes, [0x1B, 0x74, 0x02]);
+      expect(citizen().selectCodePage('CP863').bytes, [0x1B, 0x74, 0x04]);
+      expect(citizen().selectCodePage('CP1252').bytes, [0x1B, 0x74, 0x10]);
+      expect(citizen().selectCodePage('CP866').bytes, [0x1B, 0x74, 0x11]);
+      expect(citizen().selectCodePage('CP852').bytes, [0x1B, 0x74, 0x12]);
+      expect((citizen()..selectCodePage('CP865')).activeCodePage.code, 'CP865');
+    });
+
+    test('UTF-8 has no Citizen selector → CP437, reported, never multi-byte', () {
+      final r = encodePrintJobDetailed(_job(['X'], dialect: 'CITIZEN', codePage: 'UTF-8'));
+      expect(r.codePage, 'CP437');
+      expect(r.codePageKnown, isTrue);
+      expect(r.codePageSupportedByDialect, isFalse);
+      expect(_indexOf(r.bytes, [0x1B, 0x74, 0x00]), greaterThanOrEqualTo(0));
+      expect(r.warnings.any((w) => w.contains('no ESC/POS encoding')), isTrue);
+    });
+
+    test('capability gating: native QR and barcode fire, cutter fires', () {
+      final r = encodePrintJobDetailed(_job(
+        ['X'],
+        dialect: 'CITIZEN',
+        entries: [
+          PrintableEntry(kind: PrintableKind.qr, atLine: 0, content: 'NSTAR-1', sizeMm: 20),
+          PrintableEntry(kind: PrintableKind.barcode, atLine: 0, content: '12345', symbology: 'CODE128'),
+        ],
+      ));
+      expect(_indexOf(r.bytes, [0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 50, 0]), greaterThanOrEqualTo(0));
+      expect(_indexOf(r.bytes, [0x1D, 0x6B, 73, 5]), greaterThanOrEqualTo(0));
+      expect(r.qrFallbacks, 0);
+      expect(r.barcodeFallbacks, 0);
+      expect(r.cutEmitted, isTrue);
+      expect(r.bytes.sublist(r.bytes.length - 3), [0x1D, 0x56, 0x00]);
+    });
+
+    test('a whole CITIZEN ticket is byte-identical to Epson (documented emulation)', () {
+      final citizen = encodePrintJobDetailed(_job(['HELLO'], dialect: 'CITIZEN'));
       final epson = encodePrintJobDetailed(_job(['HELLO'], dialect: 'ESC/POS'));
-      expect(star.dialect, 'STAR');
-      expect(star.dialectKnown, isTrue);
-      expect(star.dialectImplemented, isFalse);
-      expect(star.bytes, epson.bytes); // default ESC/POS output, not a pretence
-      expect(star.warnings.any((w) => w.contains('not implemented')), isTrue);
+      expect(citizen.dialectImplemented, isTrue);
+      expect(citizen.bytes.sublist(0, 8), [0x1B, 0x40, 0x1B, 0x74, 0x00, 0x1B, 0x61, 0x00]);
+      expect(citizen.bytes, epson.bytes);
+      expect(citizen.warnings, isEmpty);
+    });
+
+    test('aliases resolve to CITIZEN with byte-identical output', () {
+      for (final raw in const ['CITIZEN', 'CITIZEN-ESCPOS', 'CITIZEN/SYSTEM', 'citizen']) {
+        expect(normalizeDialect(raw), 'CITIZEN', reason: raw);
+        expect(encodePrintJobDetailed(_job(['HELLO'], dialect: raw)).bytes,
+            encodePrintJobDetailed(_job(['HELLO'], dialect: 'CITIZEN')).bytes,
+            reason: raw);
+      }
     });
   });
 
@@ -538,4 +719,116 @@ void main() {
       expect(r.cutEmitted, isTrue);
     });
   });
+
+  group('thermal raster image — GS v 0 through the encoder', () {
+    // 4x2 synthetic bitmap (grey values, r=g=b).
+    ImageBitmap bitmap() {
+      final rgba = <int>[];
+      for (final v in const [0, 100, 200, 255, 255, 0, 128, 127]) {
+        rgba.addAll([v, v, v, 255]);
+      }
+      return ImageBitmap(width: 4, height: 2, rgba: rgba);
+    }
+
+    PrintableEntry image(String key, {int? maxHeightMm}) => PrintableEntry(
+          kind: PrintableKind.image,
+          atLine: 0,
+          content: key,
+          assetKey: key,
+          maxHeightMm: maxHeightMm,
+        );
+
+    test('raster-capable printer + resolvable asset emits real GS v 0 bytes', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo')], supportsRasterImage: true, widthMm: 80),
+        source: _FakeSource({'logo': Uint8List.fromList([1, 2, 3])}),
+        decoder: _FakeDecoder(bitmap()),
+      );
+      expect(r.rasterImages, 1);
+      expect(r.placeholderImages, 0);
+      expect(r.skippedImages, 0);
+      // GS v 0, row bytes = 72 (576 dots), 288 dots tall for a 4x2 source.
+      expect(_indexOf(r.bytes, [0x1D, 0x76, 0x30, 0x00, 0x48, 0x00, 0x20, 0x01]), greaterThanOrEqualTo(0));
+      expect(_indexOf(r.bytes, '[IMAGE logo]'.codeUnits), -1); // no placeholder text
+      expect(r.warnings, isEmpty);
+    });
+
+    test('the 58 mm head emits the 384-dot (48 row-byte) raster', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo')], supportsRasterImage: true, widthMm: 58),
+        source: _FakeSource({'logo': Uint8List.fromList([1])}),
+        decoder: _FakeDecoder(bitmap()),
+      );
+      expect(_indexOf(r.bytes, [0x1D, 0x76, 0x30, 0x00, 0x30, 0x00]), greaterThanOrEqualTo(0));
+    });
+
+    test('a missing asset degrades to the labelled placeholder + a warning', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo')], supportsRasterImage: true),
+        source: _FakeSource(const {'logo': null}), // not cached
+        decoder: _FakeDecoder(bitmap()),
+      );
+      expect(r.placeholderImages, 1);
+      expect(r.rasterImages, 0);
+      expect(_indexOf(r.bytes, '[IMAGE logo]'.codeUnits), greaterThanOrEqualTo(0));
+      expect(r.warnings.any((w) => w.contains('placeholder')), isTrue);
+    });
+
+    test('an unreadable/undecodable asset degrades to the placeholder + a warning', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo')], supportsRasterImage: true),
+        source: _FakeSource({'logo': Uint8List.fromList([0xFF, 0x00])}),
+        decoder: _FakeDecoder(null), // decode failed
+      );
+      expect(r.placeholderImages, 1);
+      expect(_indexOf(r.bytes, '[IMAGE logo]'.codeUnits), greaterThanOrEqualTo(0));
+      expect(r.warnings.any((w) => w.contains('missing, unreadable or not an image')), isTrue);
+    });
+
+    test('a non-raster printer skips the block, labelled and reported', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo')], supportsRasterImage: false),
+        source: _FakeSource({'logo': Uint8List.fromList([1])}),
+        decoder: _FakeDecoder(bitmap()),
+      );
+      expect(r.skippedImages, 1);
+      expect(r.rasterImages, 0);
+      expect(_indexOf(r.bytes, '[IMAGE logo skipped: no raster support]'.codeUnits), greaterThanOrEqualTo(0));
+      expect(r.warnings.any((w) => w.contains('no raster support')), isTrue);
+    });
+
+    test('a declared maxHeightMm clamp surfaces as an encoder warning', () async {
+      final r = await encodePrintJobWithImages(
+        _job(['X'], entries: [image('logo', maxHeightMm: 1)], supportsRasterImage: true, widthMm: 80),
+        source: _FakeSource({'logo': Uint8List.fromList([1])}),
+        decoder: _FakeDecoder(bitmap()),
+      );
+      expect(r.rasterImages, 1);
+      expect(r.warnings.any((w) => w.contains('cropped') && w.contains('maxHeightMm')), isTrue);
+    });
+
+    test('no IMAGE block → the text path is byte-identical', () {
+      final job = _job(['ONE', 'TWO'], entries: [
+        PrintableEntry(kind: PrintableKind.qr, atLine: 0, content: 'A'),
+      ]);
+      expect(encodePrintJobDetailed(job, rasterLookup: (_, __) => null).bytes, encodePrintJob(job));
+      expect(encodePrintJobDetailed(job).bytes, encodePrintJob(job));
+    });
+  });
+}
+
+/// assetKey → raw bytes; null models a not-cached / unreadable asset.
+class _FakeSource extends PrintImageSource {
+  _FakeSource(this._byKey);
+  final Map<String, Uint8List?> _byKey;
+  @override
+  Future<Uint8List?> bytesFor(String assetKey) async => _byKey[assetKey];
+}
+
+/// Models Flutter's decoder; null models bytes that are not an image.
+class _FakeDecoder extends PrintImageDecoder {
+  _FakeDecoder(this._bitmap);
+  final ImageBitmap? _bitmap;
+  @override
+  Future<ImageBitmap?> decode(Uint8List bytes) async => _bitmap;
 }

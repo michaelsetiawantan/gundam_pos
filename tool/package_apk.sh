@@ -43,6 +43,62 @@ flutter build apk --release \
 APK="build/app/outputs/flutter-apk/app-release.apk"
 [ -f "$APK" ] || { echo "APK missing: $APK" >&2; exit 1; }
 
+# GUARD (learned the hard way): Flutter injects android.permission.INTERNET only
+# into the DEBUG/PROFILE manifests. A release APK without it in the MAIN manifest
+# cannot make a single HTTP request, and on the tablet it looks like "this device
+# has no internet" while Chrome on the same tablet reaches the server fine.
+# Assert it on the BUILT apk, so no future manifest edit can ship that state.
+AAPT2="$(ls -d "$HOME"/android-sdk/build-tools/*/aapt2 2>/dev/null | tail -1)"
+if [ -n "$AAPT2" ]; then
+  # No pipe into `grep -q`: grep exits on the first match, which SIGPIPEs aapt2 and
+  # (under `set -o pipefail`) reports a failure even when the permission IS there.
+  BADGING="$("$AAPT2" dump badging "$APK" 2>/dev/null || true)"
+  # Every capability the tablet needs in the field. A missing INTERNET shipped once
+  # (activation looked like "no internet"); the rest are declared in the MAIN
+  # manifest for the same reason, so the WHOLE set is asserted here.
+  REQUIRED_PERMS="
+    android.permission.INTERNET
+    android.permission.ACCESS_NETWORK_STATE
+    android.permission.ACCESS_WIFI_STATE
+    android.permission.WAKE_LOCK
+    android.permission.FOREGROUND_SERVICE
+    android.permission.FOREGROUND_SERVICE_DATA_SYNC
+    android.permission.DOWNLOAD_WITHOUT_NOTIFICATION
+    android.permission.READ_EXTERNAL_STORAGE
+    android.permission.WRITE_EXTERNAL_STORAGE
+    android.permission.REQUEST_INSTALL_PACKAGES
+    android.permission.BLUETOOTH_CONNECT
+    android.permission.CAMERA
+    android.permission.REORDER_TASKS
+    com.google.android.c2dm.permission.RECEIVE
+    android.permission.POST_NOTIFICATIONS
+    android.permission.READ_SYNC_SETTINGS
+    android.permission.WRITE_SYNC_SETTINGS"
+  MISSING=""
+  for P in $REQUIRED_PERMS; do
+    case "$BADGING" in
+      *"uses-permission: name='$P'"*) ;;
+      *) MISSING="$MISSING $P" ;;
+    esac
+  done
+  # The app-scoped C2D_MESSAGE permission is stamped with the applicationId, so it
+  # is matched by suffix rather than by a name we cannot know at build time.
+  case "$BADGING" in
+    *".permission.C2D_MESSAGE'"*) ;;
+    *) MISSING="$MISSING <applicationId>.permission.C2D_MESSAGE" ;;
+  esac
+  if [ -n "$MISSING" ]; then
+    echo "FATAL: the release APK is missing required permission(s):$MISSING" >&2
+    echo "       Add them to android/app/src/main/AndroidManifest.xml — a release" >&2
+    echo "       build does NOT inherit the debug manifest, and the tablet cannot" >&2
+    echo "       reach the network or keep a job alive without them." >&2
+    exit 1
+  fi
+  echo "== guard: all required permissions present in the release APK"
+else
+  echo "== guard SKIPPED: aapt2 not found under ~/android-sdk/build-tools" >&2
+fi
+
 SHA256="$(sha256sum "$APK" | awk '{print $1}')"
 SIZE="$(stat -c %s "$APK")"
 APK_NAME="gundam-pos-${VERSION_NAME}.apk"

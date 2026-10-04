@@ -41,6 +41,10 @@ abstract class PushStore {
   Future<List<Map<String, dynamic>>> pending();
   Future<void> enqueue(String entityType, String entityId, Object payload, [int? createdAt]);
   Future<void> drain();
+
+  /// Remove ONE queued item (per-entity ack). Used by the diagnostics outbox so
+  /// a single accepted report leaves the queue without draining the rest.
+  Future<void> remove(String entityType, String entityId);
 }
 
 /// In-memory outbox (the pre-sqflite MVP behavior). Cleared on restart.
@@ -55,11 +59,20 @@ class MemoryPushStore implements PushStore {
 
   @override
   Future<void> enqueue(String entityType, String entityId, Object payload, [int? createdAt]) async {
+    // Upsert on (entity_type, entity_id), matching the sqflite
+    // `idx_pending_dedupe` UNIQUE index — re-enqueueing the same key (e.g. a
+    // re-committed settlement) replaces the payload, it never duplicates.
+    _queue.removeWhere((i) => i['type'] == entityType && i['id'] == entityId);
     _queue.add({'type': entityType, 'id': entityId, 'payload_json': payload, 'created_at': createdAt});
   }
 
   @override
   Future<void> drain() async => _queue.clear();
+
+  @override
+  Future<void> remove(String entityType, String entityId) async {
+    _queue.removeWhere((i) => i['type'] == entityType && i['id'] == entityId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +221,22 @@ class SqlitePosStore implements ReceiptSequenceStore, PushStore {
     } catch (_) {
       final fallback = _fallbackPush ??= MemoryPushStore();
       await fallback.drain();
+      _memCount = fallback.count;
+    }
+  }
+
+  @override
+  Future<void> remove(String entityType, String entityId) async {
+    try {
+      final db = await _open();
+      await db.rawDelete(
+          'DELETE FROM pending_sync WHERE entity_type = ? AND entity_id = ?',
+          [entityType, entityId]);
+      final rows = await db.rawQuery('SELECT COUNT(*) AS n FROM pending_sync');
+      _memCount = rows.isNotEmpty && rows.first['n'] is int ? rows.first['n'] as int : 0;
+    } catch (_) {
+      final fallback = _fallbackPush ??= MemoryPushStore();
+      await fallback.remove(entityType, entityId);
       _memCount = fallback.count;
     }
   }

@@ -203,6 +203,10 @@ class PrintBlock {
     this.nameMax,
     this.indent = 0,
     this.withPrice = false,
+    // ITEM_LIST grouped kitchen ticket
+    this.groupByMenu = false,
+    this.menuChar = '-',
+    this.withModifiers = false,
     // MONEY_LINES
     this.moneyLineKeys = const [],
     // PAYMENT_LINES
@@ -262,6 +266,9 @@ class PrintBlock {
               .toList()
           : const [],
       batchIndex: _int(j['batchIndex']),
+      groupByMenu: (j['groupByMenu'] as bool?) ?? false,
+      menuChar: (j['menuChar'] as String?)?.isNotEmpty == true ? j['menuChar'] as String : '-',
+      withModifiers: (j['withModifiers'] as bool?) ?? false,
       blocks: (j['blocks'] is List)
               ? (j['blocks'] as List)
                   .whereType<Map<String, dynamic>>()
@@ -289,6 +296,13 @@ class PrintBlock {
   final int? nameMax;
   final int indent;
   final bool withPrice;
+
+  /// ITEM_LIST: print a menu (category) header before each group, so ONE ticket
+  /// can carry several menus when stations are merged. [menuChar] fills the rule;
+  /// [withModifiers] nests each item's modifiers directly under it.
+  final bool groupByMenu;
+  final String menuChar;
+  final bool withModifiers;
 
   final List<String> moneyLineKeys;
 

@@ -84,14 +84,63 @@ class UpdateService {
     try {
       final dir = await bridge.apkDirectory();
       Directory(dir).createSync(recursive: true);
+      // Clear stale APKs and temp downloads BEFORE writing the new file, so each
+      // update cannot accumulate full-size APKs in app storage. Best-effort, and
+      // only after verification passed — a bad download must leave the previous
+      // good APK in place.
+      _removeStaleDownloads(dir);
       final target = p.join(dir, 'gundam-pos-v${release.version}.apk');
       await File(target).writeAsBytes(bytes, flush: true);
       final detail = await bridge.install(target);
+      // Handed off to the installer — do NOT delete the staged file here: the
+      // package installer may still read it while the user confirms. Prune the
+      // OTHER leftovers, keep the one being installed, and let the app-start
+      // prune clear it once the new build is running. Best-effort, never throws.
+      pruneDirectory(dir, keep: target);
       return UpdateAttempt(UpdateOutcome.installed, detail: detail);
     } catch (e) {
       return UpdateAttempt(UpdateOutcome.failed, detail: '$e');
     }
   }
+
+  /// Best-effort cleanup for app start: resolve the APK staging directory from
+  /// the bridge and clear downloads left behind by earlier builds (which had no
+  /// prune-before-download). Never throws — a missing platform path or a delete
+  /// failure must not affect startup.
+  Future<void> pruneStaleDownloads() async {
+    try {
+      pruneDirectory(await bridge.apkDirectory());
+    } catch (_) {}
+  }
+
+  /// Delete staged downloads (`*.apk`, `*.part`) in [dir]. Best-effort: a failed
+  /// delete is swallowed so it can never fail the update/startup, and non-APK
+  /// files (logs, etc.) are left untouched. [keep] (an absolute path) is
+  /// preserved so an APK currently handed to the installer is not removed.
+  ///
+  /// [minAge] guards a REAL field failure: a file modified moments ago may be
+  /// the APK Android's package installer is about to read. The app-start prune
+  /// used to delete it (no `keep`), so switching back to the app before tapping
+  /// "Install" removed the file and the install died with "can't install /
+  /// problem parsing the package". Anything newer than [minAge] is left alone.
+  static void pruneDirectory(String dir, {String? keep, Duration minAge = const Duration(minutes: 30)}) {
+    final root = Directory(dir);
+    if (!root.existsSync()) return;
+    final now = DateTime.now();
+    for (final entry in root.listSync()) {
+      if (entry is! File) continue;
+      final name = p.basename(entry.path);
+      if (!name.endsWith('.apk') && !name.endsWith('.part')) continue;
+      if (keep != null && entry.path == keep) continue;
+      try {
+        // A pending install must survive: never delete a fresh download.
+        if (now.difference(entry.lastModifiedSync()) < minAge) continue;
+        entry.deleteSync();
+      } catch (_) {}
+    }
+  }
+
+  void _removeStaleDownloads(String dir) => pruneDirectory(dir);
 }
 
 /// Production bridge: dart:io over `http` for the download, app storage for the

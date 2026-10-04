@@ -1,7 +1,7 @@
 {
   "dialects": {
     "CITIZEN": {
-      "implemented": false
+      "implemented": true
     },
     "ESC/POS": {
       "implemented": true
@@ -10,7 +10,7 @@
       "implemented": true
     },
     "STAR": {
-      "implemented": false
+      "implemented": true
     }
   },
   "dialectAliases": {

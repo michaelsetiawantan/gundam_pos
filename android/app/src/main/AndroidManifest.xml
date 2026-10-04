@@ -15,12 +15,88 @@
          launch the installer intent; the install itself is always confirmed by
          the operator in the system dialog. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- REQUIRED in the MAIN manifest: Flutter injects INTERNET only into the
+         debug/profile manifests (for its dev tooling), so a RELEASE build without
+         this line cannot make a single HTTP request — the activation probe then
+         fails as if the device had no internet while Chrome on the same tablet
+         reaches the server fine. tool/package_apk.sh now fails the build if the
+         packaged APK is missing it. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- ============ Requested capability set (tablet field deployment) ============ -->
+
+    <!-- FULL NETWORK ACCESS = INTERNET (declared just above) + the connection
+         state, so the activation probe can tell "no route/DNS" from "server
+         answered with an error". VIEW NETWORK CONNECTION. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- VIEW WIFI CONNECTIONS (LAN printer diagnostics; the app never changes
+         Wi-Fi settings, so CHANGE_WIFI_STATE is deliberately NOT declared). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+
+    <!-- PREVENT TABLET FROM SLEEPING: keeps the CPU (and, with the screen flag,
+         the display) alive while a shift is being counted or a print batch is
+         draining — a sleeping tablet dropped those mid-flight. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- RUN FOREGROUND SERVICE: a sync/print job that must survive the app being
+         backgrounded. API 34+ additionally requires a service TYPE permission;
+         the job is data sync, so that is the type declared. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- DOWNLOAD FILES WITHOUT NOTIFICATION: the in-app APK update downloads
+         silently — the operator sees the app's own progress, not a system notice
+         per file. -->
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION" />
+
+    <!-- STORAGE — internal + external (SD card), with the version caps Android
+         requires: WRITE matters only up to API 29 (scoped storage from 30) and
+         READ up to API 32 (granular media permissions from 33).
+         CAVEAT, not a manifest problem: on API 30+ writing to a USER-visible or
+         removable SD location needs "All files access" (MANAGE_EXTERNAL_STORAGE)
+         granted by hand in system settings, and the app must open that screen.
+         App-private storage (the APK staging + print log) needs no permission. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+    <!-- CAMERA (photo + video). Declared with required="false" on PURPOSE: asking
+         for CAMERA makes Android assume the device HAS a camera, so a camera-less
+         tablet (a common POS panel) would be refused installation. The feature is
+         optional at runtime instead. A video capture also needs a record-audio
+         decision at runtime, which is a runtime permission, not a manifest one. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- REORDER RUNNING APPS: lets the tablet bring its own task to the front
+         (e.g. after an update install) instead of the operator hunting for it. -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+
+    <!-- LISTEN TO C2DM / FCM MESSAGE. C2DM is the legacy transport name Google
+         kept for its receiver permission; FCM delivers through the same one, so
+         this single declaration covers both. Push ALSO needs WAKE_LOCK (declared
+         above) and, on API 33+, POST_NOTIFICATIONS to actually surface a message.
+         CAVEAT: the permission is only plumbing — push does nothing until the app
+         links a messaging SDK and ships its google-services config. -->
+    <uses-permission android:name="com.google.android.c2dm.permission.RECEIVE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <permission android:name="${applicationId}.permission.C2D_MESSAGE" android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.C2D_MESSAGE" />
+
+    <!-- PULL DATA FROM SERVER AUTOMATICALLY. The operative permission is INTERNET
+         (declared above) — a periodic pull needs nothing more. These two are for a
+         SyncAdapter-style implementation (a background account sync the system
+         schedules); harmless without one, required with. -->
+    <uses-permission android:name="android.permission.READ_SYNC_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SYNC_SETTINGS" />
 
     <!-- USB thermal printers (Android USB Host). The four common serial bridge
          chips (CDC-ACM, CH340/CH341, PL2303, FTDI) are built into this APK — no
          separate driver app. Not required: a device without USB host still runs.
          Runtime permission is requested per device via UsbManager. -->
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+    <!-- Camera is OPTIONAL: the permission is declared but the device is not
+         required to have one (a POS panel often does not). -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
         android:label="Gundam POS"

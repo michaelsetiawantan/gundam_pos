@@ -17,6 +17,7 @@ import 'package:gundam_pos/data/print_format_store.dart';
 import 'package:gundam_pos/logic/print_format.dart';
 import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/services/escpos.dart';
+import 'package:gundam_pos/services/print_image.dart';
 
 /// Transport descriptor for one printer (subset of the server `Printer`).
 class PrintPrinter {
@@ -110,7 +111,26 @@ abstract class PrintTransport {
 
 /// TCP :9100 transport (network printers) — real ESC/POS bytes.
 class NetworkPrintTransport implements PrintTransport {
-  const NetworkPrintTransport();
+  const NetworkPrintTransport({PrintImageSource? Function()? imageSourceProvider})
+      : _imageSourceProvider = imageSourceProvider;
+
+  /// Resolves an IMAGE block's `assetKey` to cached bytes; null → placeholder.
+  /// Wired explicitly for every transport (network included) by the app factory,
+  /// so there is no global seam and no transport-specific gap.
+  final PrintImageSource? Function()? _imageSourceProvider;
+
+  /// IMAGE entries need the async resolver (decode + dither); a ticket without
+  /// them takes the synchronous encoder exactly as before.
+  Future<List<int>> _encode(PrintJob job) async {
+    final source = _imageSourceProvider?.call();
+    final needsRaster = source != null &&
+        job.printer.supportsRasterImage &&
+        job.entries.any((e) => e.kind == PrintableKind.image);
+    if (needsRaster) {
+      return (await encodePrintJobWithImages(job, source: source, widthMm: job.printer.widthMm)).bytes;
+    }
+    return encodePrintJob(job, widthMm: job.printer.widthMm);
+  }
 
   @override
   Future<void> send(PrintJob job) async {
@@ -123,15 +143,12 @@ class NetworkPrintTransport implements PrintTransport {
       timeout: const Duration(seconds: 3),
     );
     try {
-      socket.add(_bytes(job));
+      socket.add(await _encode(job));
       await socket.flush();
     } finally {
       await socket.close();
     }
   }
-
-  /// Real ESC/POS encoding (shared with the Bluetooth transport).
-  List<int> _bytes(PrintJob job) => encodePrintJob(job);
 }
 
 /// Dispatches a job to the transport bound to its printer type. The queue keeps
@@ -203,6 +220,10 @@ class PrintBroker {
   final PrintFormatStore _store;
   final PrintQueue _queue;
 
+  /// true when the outlet has ANY published format — used by the dispatcher to
+  /// tell "this ticket type fell back" apart from "no formats at all".
+  bool get hasPublishedFormats => _store.hasFormats;
+
   /// Choose + render a ticket. Never throws: falls back to the built-in layout.
   TicketRender renderTicket({
     required String ticketType,
@@ -213,12 +234,27 @@ class PrintBroker {
     if (configured != null) {
       try {
         final r = renderPrintFormat(format: configured, ticketPayload: payload, widthMm: widthMm);
-        return TicketRender(lines: r.lines, entries: r.entries, usedFormat: true);
+        return _withDrawerPulse(TicketRender(lines: r.lines, entries: r.entries, usedFormat: true), payload);
       } catch (e) {
         return _builtin(ticketType, payload, widthMm, 'configured format failed ($e)');
       }
     }
     return _builtin(ticketType, payload, widthMm, _store.notice ?? 'no format configured');
+  }
+
+  /// A settle that took CASH asks for the drawer to pop: the pulse rides the SAME
+  /// job (one connection, same queue/retry), appended after the last line.
+  TicketRender _withDrawerPulse(TicketRender r, Map<String, dynamic> payload) {
+    if (payload['drawer_pulse'] != true) return r;
+    return TicketRender(
+      lines: r.lines,
+      entries: [
+        ...r.entries,
+        PrintableEntry(kind: PrintableKind.pulse, atLine: r.lines.length),
+      ],
+      usedFormat: r.usedFormat,
+      fallbackReason: r.fallbackReason,
+    );
   }
 
   /// Render then hand the job to the sequential queue.
@@ -248,7 +284,10 @@ class PrintBroker {
       ticketPayload: payload,
       widthMm: widthMm,
     );
-    return TicketRender(lines: r.lines, entries: r.entries, usedFormat: false, fallbackReason: reason);
+    return _withDrawerPulse(
+      TicketRender(lines: r.lines, entries: r.entries, usedFormat: false, fallbackReason: reason),
+      payload,
+    );
   }
 }
 
@@ -274,8 +313,10 @@ PrintFormat builtinFormat(String ticketType, {int widthMm = 80}) {
         {'id': 'c', 'type': 'TEXT', 'text': 'Table {table_name}   Batch {batch_label}'},
         {'id': 'd', 'type': 'TEXT', 'text': '{canceled_label}'},
         {'id': 'e', 'type': 'SEPARATOR'},
-        {'id': 'f', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY', 'wrap': true},
-        {'id': 'g', 'type': 'MODIFIER_LIST', 'indent': 2},
+        // groupByMenu: a merged station still gets one section per menu (the
+        // header line the kitchen sorts by). withModifiers nests each item's
+        // modifiers under it — a flat list at the ticket end detaches them.
+        {'id': 'f', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY', 'wrap': true, 'groupByMenu': true, 'withModifiers': true},
         {'id': 'h', 'type': 'FEED', 'lines': 2},
       ]);
     case 'BEV_LABEL':

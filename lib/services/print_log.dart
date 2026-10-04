@@ -14,6 +14,7 @@ library;
 import 'dart:async';
 import 'dart:math';
 
+import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/data/print_log_store.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
@@ -249,12 +250,26 @@ class PrintLogAudit {
 }
 
 /// Outcome of one upload pass.
+///
+/// [uploaded] rows the server accepted (or had already seen), [failed] rows it
+/// rejected, [remaining] rows still queued locally. [rejectedCodes] carries the
+/// server's per-row error codes so the UI can say *why* instead of blaming the
+/// printer. [offline] is true only when the request never reached the server —
+/// distinct from a server that answered and rejected a row.
 class PrintLogUploadResult {
-  const PrintLogUploadResult({required this.uploaded, required this.failed, required this.remaining});
+  const PrintLogUploadResult({
+    required this.uploaded,
+    required this.failed,
+    required this.remaining,
+    this.rejectedCodes = const [],
+    this.offline = false,
+  });
 
   final int uploaded;
   final int failed;
   final int remaining;
+  final List<String> rejectedCodes;
+  final bool offline;
 
   bool get allUploaded => remaining == 0;
 }
@@ -269,50 +284,126 @@ class PrintLogUploader {
   final int batchSize;
 
   Future<PrintLogUploadResult> uploadPending({required String tenantId, required String assetId}) async {
-    final rows = await store.dueForUpload(limit: batchSize);
+    // Snapshot the whole backlog once, then ship it in id-keyed batches. A
+    // snapshot (not a live query) means a row the server rejects is not
+    // re-sent within the same pass — no loop.
+    final rows = await store.dueForUpload(limit: _scanLimit);
     if (rows.isEmpty) return const PrintLogUploadResult(uploaded: 0, failed: 0, remaining: 0);
-    try {
-      final res = await api.postPrintLogs(
-        tenantId: tenantId,
-        assetId: assetId,
-        logs: [for (final r in rows) r.toUploadJson()],
-      );
-      final (sent, rejected) = _parse(res, rows);
-      if (sent.isNotEmpty) await store.markSent(sent);
-      if (rejected.isNotEmpty) await store.markFailed(rejected, 'rejected by server');
-      final remaining = await store.pendingUploadCount();
-      return PrintLogUploadResult(
-        uploaded: sent.length,
-        failed: rejected.length,
-        remaining: remaining,
-      );
-    } catch (e) {
-      // Offline / server error: keep every row pending for the next retry.
-      await store.markFailed([for (final r in rows) r.clientLogId], e.toString());
-      return PrintLogUploadResult(uploaded: 0, failed: rows.length, remaining: await store.pendingUploadCount());
+
+    var uploaded = 0;
+    var failed = 0;
+    var offline = false;
+    final rejectedCodes = <String>{};
+
+    for (var start = 0; start < rows.length; start += batchSize) {
+      final batch = rows.sublist(start, min(start + batchSize, rows.length));
+      final Map<String, dynamic> res;
+      try {
+        res = await api.postPrintLogs(
+          tenantId: tenantId,
+          assetId: assetId,
+          logs: [for (final r in batch) r.toUploadJson()],
+        );
+      } catch (e) {
+        // Two very different failures the operator must be able to tell apart:
+        // the server ANSWERED and refused (e.g. asset_not_found — the reporting
+        // identity was not recognised) vs we could not reach it at all. Calling
+        // a server refusal "no network" sent people chasing the wrong problem.
+        if (e is PosApiException) {
+          rejectedCodes.add(e.code);
+          await store.markFailed([for (final r in batch) r.clientLogId], '${e.status} ${e.code}');
+          failed += batch.length;
+          break;
+        }
+        offline = true;
+        await store.markFailed([for (final r in batch) r.clientLogId], e.toString());
+        failed += batch.length;
+        break;
+      }
+      final parsed = _parse(res, batch);
+      if (parsed.sent.isNotEmpty) await store.markSent(parsed.sent);
+      if (parsed.rejected.isNotEmpty) {
+        await store.markFailed(parsed.rejected, parsed.reason);
+        rejectedCodes.addAll(parsed.codes);
+      }
+      uploaded += parsed.sent.length;
+      failed += parsed.rejected.length;
     }
+
+    return PrintLogUploadResult(
+      uploaded: uploaded,
+      failed: failed,
+      remaining: await store.pendingUploadCount(),
+      rejectedCodes: rejectedCodes.toList()..sort(),
+      offline: offline,
+    );
   }
 
-  /// Tolerant response parse: honour per-log id lists when present, else treat a
-  /// 2xx as accepting the whole id-keyed batch (the upload is idempotent, so a
-  /// re-send is always safe).
-  (List<String>, List<String>) _parse(Map<String, dynamic> res, List<PrintLogRow> rows) {
+  /// Tolerant response parse. The server answers per row: `accepted` /
+  /// `alreadySeen` / `rejected` counts plus an `errors[]` list carrying the
+  /// `clientLogId` and `error` code of each rejected row. A rejected row must
+  /// NOT sink the whole batch — the accepted rows are marked sent, only the
+  /// named rejects stay queued (with a reason). A response that lists ids
+  /// directly (future shape) is honoured too.
+  _ParsedUpload _parse(Map<String, dynamic> res, List<PrintLogRow> rows) {
+    final rowIds = [for (final r in rows) r.clientLogId];
     final accepted = res['accepted'];
     final seen = res['alreadySeen'];
-    final rejected = res['rejected'];
-    final hasIdLists = accepted is List || seen is List || rejected is List;
-    if (!hasIdLists) {
-      // Count-only summary: acknowledge all when nothing was rejected.
-      final rejCount = rejected is num ? rejected.toInt() : 0;
-      if (rejCount > 0) return (const [], [for (final r in rows) r.clientLogId]);
-      return ([for (final r in rows) r.clientLogId], const []);
+    final rejectedRaw = res['rejected'];
+
+    final rejectedIds = <String>[];
+    final codes = <String>[];
+    final details = res['errors'];
+    if (details is List) {
+      for (final e in details) {
+        if (e is! Map) continue;
+        final id = e['clientLogId'];
+        if (id is String && id.isNotEmpty && rowIds.contains(id)) rejectedIds.add(id);
+        final code = e['error'];
+        if (code is String && code.isNotEmpty) codes.add(code);
+      }
     }
-    final sent = <String>{..._ids(accepted), ..._ids(seen)};
-    return (sent.toList(), _ids(rejected));
+
+    final acceptedList = accepted is List ? _ids(accepted) : null;
+    final seenList = seen is List ? _ids(seen) : null;
+    final rejectedList = rejectedRaw is List ? _ids(rejectedRaw) : null;
+    if (acceptedList != null || seenList != null || rejectedList != null) {
+      final rejected = {...?rejectedList};
+      final sent = [...?acceptedList, ...?seenList].where((id) => !rejected.contains(id)).toList();
+      return _ParsedUpload(sent, rejected.toList(), codes, _reason(codes));
+    }
+
+    // Count-only summary.
+    final rejCount = rejectedRaw is num ? rejectedRaw.toInt() : rejectedIds.length;
+    if (rejCount == 0 && rejectedIds.isEmpty) {
+      return _ParsedUpload(rowIds, const [], codes, _reason(codes));
+    }
+    // We know exactly which rows were rejected only when the server names them
+    // in `errors[]`. Without that detail we cannot honestly mark any row sent,
+    // so the whole batch stays queued (never silently discarded).
+    final rejected = rejectedIds.isNotEmpty ? rejectedIds : rowIds;
+    final rejectedSet = rejected.toSet();
+    final sent = rowIds.where((id) => !rejectedSet.contains(id)).toList();
+    return _ParsedUpload(sent, rejected, codes, _reason(codes));
   }
+
+  static String _reason(List<String> codes) =>
+      codes.isEmpty ? 'rejected by server' : 'rejected by server: ${codes.join(', ')}';
 
   static List<String> _ids(Object? v) {
     if (v is! List) return const [];
-    return [for (final e in v) if (e is String) e];
+    return [for (final e in v) if (e is String && e.isNotEmpty) e];
   }
+
+  static const int _scanLimit = 100000;
+}
+
+/// Internal parse result: the ids to mark sent / rejected plus the reason.
+class _ParsedUpload {
+  const _ParsedUpload(this.sent, this.rejected, this.codes, this.reason);
+
+  final List<String> sent;
+  final List<String> rejected;
+  final List<String> codes;
+  final String reason;
 }

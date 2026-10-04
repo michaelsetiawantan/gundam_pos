@@ -3,9 +3,11 @@ import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/receipt.dart';
 import 'package:gundam_pos/models/config_models.dart';
+import 'package:gundam_pos/services/print_dispatcher.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 
 import 'support/fake_backend.dart';
+import 'support/print_support.dart';
 
 TenantConfig _northstar() =>
     TenantConfig.fromSyncPayloads(FakeBackend.northstarMaster(), FakeBackend.northstarOutlet());
@@ -219,6 +221,76 @@ void main() {
       final ship = backend.lastSettleBody!['shipment'] as Map<String, dynamic>;
       expect(ship['masterShipmentId'], 'ship-1');
       expect(ship.containsKey('amount'), isFalse);
+    });
+  });
+
+  group('settle does not wait for the printer (fire-and-forget)', () {
+    late TenantConfig config;
+    setUp(() => config = _northstar());
+
+    OutletPaymentMethod cashMethod(TenantConfig cfg) =>
+        cfg.paymentMethods.firstWhere((m) => m.type == money.PayType.cash);
+
+    PaymentController ctrl(
+      Cart cart, {
+      PrintDispatcher? printer,
+      void Function(List<String> alerts)? onPrintAlerts,
+    }) =>
+        PaymentController(
+          posApi: _backend().createSession().posApi,
+          tenantId: 't1',
+          config: config,
+          orderId: 'order-1',
+          tableName: 'A1',
+          cart: cart,
+          deviceAssetId: 'device-1',
+          shortcode: 'NSTAR-POS1',
+          printer: printer,
+          onPrintAlerts: onPrintAlerts,
+        );
+
+    test('settle returns with the sale done BEFORE the bill print finishes', () async {
+      final d = GatedDispatcher();
+      final c = ctrl(_singleEspresso(), printer: d);
+      c.addPayment(cashMethod(config), 28000);
+
+      expect(await c.settle(), isTrue);
+      // The sale is settled even though the printer is still blocked.
+      expect(c.settled, isNotNull, reason: 'server bill already back');
+      expect(d.billCalls, 1, reason: 'print STARTED, not awaited');
+      expect(d.gate.isCompleted, isFalse);
+      expect(c.printAlerts, isEmpty, reason: 'print not finished → no warnings yet');
+
+      // Release the printer: the late warnings must still land.
+      d.gate.complete();
+      await pumpEventQueue();
+      expect(c.printAlerts, contains('BILL printer offline — test.'));
+    });
+
+    test('late print warnings are delivered through onPrintAlerts', () async {
+      final d = GatedDispatcher();
+      final got = <String>[];
+      final c = ctrl(_singleEspresso(), printer: d, onPrintAlerts: got.addAll);
+      c.addPayment(cashMethod(config), 28000);
+
+      await c.settle();
+      expect(got, isEmpty, reason: 'delivered only when the print finishes');
+
+      d.gate.complete();
+      await pumpEventQueue();
+      expect(got, ['BILL printer offline — test.']);
+    });
+
+    test('a print failure never fails the sale', () async {
+      final d = buildDispatcher(AlwaysFailingTransport());
+      final got = <String>[];
+      final c = ctrl(_singleEspresso(), printer: d, onPrintAlerts: got.addAll);
+      c.addPayment(cashMethod(config), 28000);
+
+      expect(await c.settle(), isTrue, reason: 'a dead printer must not void the sale');
+      await pumpEventQueue();
+      expect(c.error, isNull);
+      expect(got, isNotEmpty, reason: 'the operator is still told the print failed');
     });
   });
 

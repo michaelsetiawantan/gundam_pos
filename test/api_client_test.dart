@@ -52,6 +52,15 @@ void main() {
       );
     });
 
+    test('429 rate_limited tolerates a STRING retryAfter (no throw)', () async {
+      final mock = MockClient((_) async => http.Response('{"error":"rate_limited","retryAfter":"30"}', 429));
+      final client = ApiClient(baseUrl: 'http://api.test', httpClient: mock);
+      final err = await _catch(client.post('/api/auth/pos-login', body: {}, auth: false));
+      expect(err, isA<PosApiException>());
+      expect((err as PosApiException).isRateLimited, isTrue);
+      expect(err.retryAfterSeconds, 30);
+    });
+
     test('single-active other device maps to a distinct error', () async {
       final mock = MockClient((_) async => http.Response(
             '{"error":"session_active_other_device","message":"Session active on another device"}',

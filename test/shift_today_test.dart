@@ -124,7 +124,7 @@ void main() {
 
     // Closing report.
     expect(find.text('Shift closed'), findsOneWidget);
-    expect(find.textContaining('-20000'), findsOneWidget);
+    expect(find.textContaining(money.moneyLabel(-20000, 'Rp')), findsOneWidget);
     expect(find.text('Done'), findsOneWidget);
   });
 

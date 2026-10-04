@@ -29,22 +29,45 @@ class CartLine {
     required this.qty,
     required this.priceLevelIndex,
     required this.unitPrice, // base unit price (level price before mods)
+    this.lineId, // server OrderLine id (null = purely local, never server-backed)
     this.modifiers = const [],
     this.vatMode = money.VatScMode.none,
     this.scMode = money.VatScMode.none,
     this.sent = false,
+    this.pending = false, // local-only: queued to the outbox, not yet confirmed
+    this.failed = false, // local-only: server rejected this add
+    this.localKey, // stable local identity for the outbox (entityId)
   });
+
+  /// Server line id (`OrderLine.id`). The server is authoritative for lines, so
+  /// removing a line must target THIS id via DELETE /orders/[id]/lines/[lineId].
+  /// Null only for a line the server never acknowledged. Mutated when an
+  /// optimistically-added line is adopted from the server response.
+  String? lineId;
 
   final String itemId;
   final String name;
   final String sku;
   int qty;
   final int priceLevelIndex;
-  final double unitPrice;
-  final List<CartModifier> modifiers;
+
+  /// Base unit price (level price before mods) while [pending]; the server's
+  /// modifier-INCLUSIVE unit price after adoption (modifiers then dropped).
+  double unitPrice;
+  List<CartModifier> modifiers;
   final money.VatScMode vatMode;
   final money.VatScMode scMode;
   bool sent; // already send-cart → never reprinted
+
+  /// Local-only sync flags: [pending] = queued in the outbox, awaiting the
+  /// server; [failed] = the server rejected the add (operator must remove it).
+  bool pending;
+  bool failed;
+
+  /// Stable local identity used as the outbox `entityId` for this add, so a
+  /// queued push can be matched back to this line. Null for lines that never
+  /// went through the offline path (server-adopted at load time).
+  final String? localKey;
 
   /// Modifier-inclusive unit price (server: lineUnitPrice = base + Σ mods).
   double get unitPriceWithMods => money.round2(unitPrice + modifiers.fold<double>(0, (s, m) => s + m.subtotal));
@@ -73,11 +96,17 @@ class Cart {
 
   bool get isEmpty => lines.isEmpty;
 
-  void addLine(CartLine line) {
-    for (final l in lines) {
-      if (l.signature() == line.signature() && !l.sent) {
-        l.qty += line.qty;
-        return;
+  /// Add a line. `merge` folds an identical UNSENT line into one row (pure
+  /// local convenience). Order sync passes `merge: false`: the server keeps one
+  /// OrderLine per add, so the local cart must stay 1:1 with it or a later
+  /// delete/removal targets the wrong row.
+  void addLine(CartLine line, {bool merge = true}) {
+    if (merge) {
+      for (final l in lines) {
+        if (l.signature() == line.signature() && !l.sent) {
+          l.qty += line.qty;
+          return;
+        }
       }
     }
     lines.add(line);

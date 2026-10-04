@@ -165,7 +165,10 @@ Set<String> ancestorsOf(String categoryId, Map<String, String?> parentById) {
 }
 
 bool _tagsMatch(List<PricingCategoryTag> tags, Set<String> lineCats, List<Set<String>> ancestors) {
-  if (tags.isEmpty) return false; // untagged master is dormant (mirrors server)
+  // A master with NO category tag applies to the WHOLE bill (a whole-bill
+  // discount/voucher needs no category restriction). Mirrors the server
+  // (`web/lib/eligibility.ts isEligible`). Tagged masters still match exactly.
+  if (tags.isEmpty) return true;
   for (final t in tags) {
     if (t.includesChildren) {
       if (ancestors.any((a) => a.contains(t.categoryId))) return true;

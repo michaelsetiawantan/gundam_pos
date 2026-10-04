@@ -218,7 +218,7 @@ void main() {
       expect(r.fallbackReason, isNotNull);
       final joined = r.lines.join('\n');
       expect(joined, contains(receiptId)); // receipt id present
-      expect(joined, contains(flow.total.toStringAsFixed(2))); // total present
+      expect(joined, contains(money.moneyLabel(flow.total, ''))); // total present, money-formatted
     });
 
     test('malformed payload falls back and never throws', () {
@@ -255,7 +255,7 @@ void main() {
       expect(r.usedFormat, isTrue);
       final joined = r.lines.join('\n');
       expect(joined, contains(receiptId));
-      expect(joined, contains(flow.total.toStringAsFixed(2)));
+      expect(joined, contains(money.moneyLabel(flow.total, '')));
     });
 
     test('wrong ticket type → built-in for that type', () {

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
+import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/services/bluetooth_print_transport.dart';
@@ -9,6 +9,7 @@ import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/shift_controller.dart';
+import 'package:gundam_pos/ui/money_input.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
@@ -27,7 +28,20 @@ class ShiftScreen extends StatefulWidget {
 
 class _ShiftScreenState extends State<ShiftScreen> {
   final _housebank = TextEditingController();
-  final _counted = TextEditingController();
+  /// One controller per END SHIFT count input, keyed by [EndCountField.key]
+  /// (countedTotal / cash / cashless / outlet method id). Built lazily from the
+  /// mode's field list so the dialog renders 1 / 2 / N inputs.
+  final _counts = <String, TextEditingController>{};
+
+  TextEditingController _countFor(String key) =>
+      _counts.putIfAbsent(key, () => TextEditingController());
+
+  /// The shift rules the running shift runs on (pinned config if pinned).
+  ShiftConfig get _effectiveShift => c.effectiveConfig(widget.config.shift);
+
+  /// The END SHIFT count inputs to render for the current mode.
+  List<EndCountField> get _countFields =>
+      endCountFields(_effectiveShift.endCountMode, widget.config.paymentMethods);
 
   /// The app-wide controller held by the session — pinned config applies
   /// everywhere (order/payment flow included), not just this screen.
@@ -152,38 +166,72 @@ class _ShiftScreenState extends State<ShiftScreen> {
   @override
   void initState() {
     super.initState();
+    // Seed from the controller's remembered count when a shift is already open
+    // (restored), else the tenant default. The typed value lives on the
+    // controller, not this disposable text field.
+    final typed = c.startHousebank;
     final def = widget.config.shift.defaultHouseBank;
-    _housebank.text = def > 0 ? '${def.round()}' : '';
+    _housebank.text = typed != null && typed > 0
+        ? formatMoneyInput(typed)
+        : (def > 0 ? formatMoneyInput(def) : '');
+    // Recover a shift that is already OPEN on the server (app closed and
+    // reopened) so the screen opens straight into the end-shift panel.
+    c.restore();
   }
 
   @override
   void dispose() {
     _housebank.dispose();
-    _counted.dispose();
+    for (final ctrl in _counts.values) {
+      ctrl.dispose();
+    }
     super.dispose();
   }
 
   Future<void> _start() async {
     final ok = await c.open(
-      housebank: double.tryParse(_housebank.text.trim()),
+      housebank: _housebank.text.trim().isEmpty ? c.startHousebank : parseMoneyInput(_housebank.text),
       config: widget.config.shift,
     );
     if (!mounted) return;
     if (!ok) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.error ?? 'Could not start shift')));
-    if (ok) _counted.text = '0';
+    if (ok) _countFor('countedTotal').text = '0';
   }
 
   Future<void> _end() async {
-    if ((double.tryParse(_counted.text.trim()) ?? -1) < 0) return;
-    final ok = await c.close(countedTotal: double.tryParse(_counted.text.trim()) ?? 0);
+    final mode = _effectiveShift.endCountMode;
+    final fields = _countFields;
+    double val(String key) => parseMoneyInput(_countFor(key).text);
+    final ok = await switch (mode) {
+      // ONLY_CASH: legacy single total. Empty → no-op.
+      EndCountMode.onlyCash => _countFor('countedTotal').text.trim().isEmpty
+          ? Future<bool>.value(false)
+          : c.close(mode: mode, countedTotal: val('countedTotal')),
+      EndCountMode.cashCashless => c.close(mode: mode, cash: val('cash'), cashless: val('cashless')),
+      EndCountMode.crosscheckPerMethod => c.close(
+          mode: mode,
+          perMethod: [
+            for (final f in fields)
+              if (f.outletMethodId != null) {'outletMethodId': f.outletMethodId, 'counted': val(f.key)},
+          ],
+        ),
+    };
     if (!mounted) return;
-    if (!ok) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.error ?? 'Could not close shift')));
+    if (!ok && c.error != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.error!)));
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(c.isClosed ? 'Closing report' : (c.isOpen ? gate.endLabel : gate.startLabel))),
+      appBar: AppBar(
+        title: ListenableBuilder(
+          listenable: c,
+          builder: (_, __) =>
+              Text(c.isClosed ? 'Closing report' : (c.isOpen ? gate.endLabel : gate.startLabel)),
+        ),
+      ),
       body: SafeArea(
         child: ListenableBuilder(
           listenable: c,
@@ -220,8 +268,8 @@ class _ShiftScreenState extends State<ShiftScreen> {
         controller: _housebank,
         enabled: !c.busy,
         keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        decoration: const InputDecoration(labelText: 'Opening cash (total)', prefixIcon: Icon(Icons.account_balance_wallet_outlined), prefixText: 'Rp '),
+        inputFormatters: const [ThousandsInputFormatter()],
+        decoration: InputDecoration(labelText: 'Opening cash (total)', prefixIcon: const Icon(Icons.account_balance_wallet_outlined), prefixText: _prefixText),
       ),
       const SizedBox(height: 8),
       const Text('Cash count is a single total — no denomination input.', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
@@ -242,7 +290,7 @@ class _ShiftScreenState extends State<ShiftScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text('Shift open', style: TextStyle(color: PosTheme.tealSoft, fontSize: 13)),
           const SizedBox(height: 6),
-          Text('Opening cash: Rp ${c.openingHousebank.round()}',
+          Text('Opening cash: ${_numStr(c.openingHousebank)}',
               style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 4),
           Text('Type: ${(c.shift?['shiftType'] ?? 'MANUAL')}', style: const TextStyle(color: PosTheme.tealSoft)),
@@ -257,14 +305,23 @@ class _ShiftScreenState extends State<ShiftScreen> {
       const SizedBox(height: 24),
       Text(g.endLabel, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.petrol)),
       const SizedBox(height: 10),
-      TextField(
-        controller: _counted,
-        enabled: !c.busy,
-        keyboardType: TextInputType.number,
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        decoration: const InputDecoration(labelText: 'Counted cash (total)', prefixIcon: Icon(Icons.payments_outlined), prefixText: 'Rp '),
-      ),
-      const SizedBox(height: 20),
+      // END SHIFT inputs: 1 (ONLY_CASH), 2 (CASH_CASHLESS), or one per ACTIVE
+      // outlet method (CROSSCHECK_PER_METHOD). Labels come from the config mode.
+      for (final f in _countFields) ...[
+        TextField(
+          controller: _countFor(f.key),
+          enabled: !c.busy,
+          keyboardType: TextInputType.number,
+          inputFormatters: const [ThousandsInputFormatter()],
+          decoration: InputDecoration(
+            labelText: f.label,
+            prefixIcon: const Icon(Icons.payments_outlined),
+            prefixText: _prefixText,
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+      const SizedBox(height: 8),
       PrimaryButton(label: g.endLabel, busy: c.busy, icon: Icons.logout, onPressed: c.busy ? null : _end),
     ];
   }
@@ -311,7 +368,7 @@ class _ShiftScreenState extends State<ShiftScreen> {
           Expanded(child: Text(label, style: const TextStyle(color: PosTheme.slate, fontSize: 15))),
           const SizedBox(width: 12),
           Flexible(
-            child: Text('Rp ${_numStr(value)}',
+            child: Text(_numStr(value),
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   fontWeight: FontWeight.w800,
@@ -324,6 +381,13 @@ class _ShiftScreenState extends State<ShiftScreen> {
 
   Object _n(Object? v) => v ?? 0;
 
-  String _numStr(Object v) => (numValue(v)).round().toString();
+  /// The currency label the server stores, as a field prefix.
+  String get _prefixText {
+    final l = widget.config.shift.currencyLabel.trim();
+    return l.isEmpty ? '' : '$l ';
+  }
+
+  // Amounts read like everywhere else: label + grouping + 2 decimals.
+  String _numStr(Object v) => money.moneyLabel(numValue(v), widget.config.shift.currencyLabel);
   static num numValue(Object v) => (v as num?) ?? 0;
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import 'package:gundam_pos/api/api_client.dart';
@@ -12,6 +14,7 @@ import 'package:gundam_pos/logic/shift_window.dart';
 import 'package:gundam_pos/logic/shipment.dart';
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/services/print_dispatcher.dart';
+import 'package:gundam_pos/state/pricing_controller.dart';
 
 /// Drives payment for an order: canonical payable preview (server recomputes at
 /// settle), split allocation until payable is covered — rounding happens once
@@ -25,6 +28,7 @@ class PaymentController extends ChangeNotifier {
     required this.orderId,
     required this.tableName,
     required this.cart,
+    this.openedByName = '',
     this.deviceAssetId,
     this.shortcode,
     ReceiptSequencer? receipts,
@@ -32,17 +36,46 @@ class PaymentController extends ChangeNotifier {
     this.printer,
     this.openedAt,
     this.shiftGate,
-  }) : _receipts = receipts ?? ReceiptSequencer();
+    this.onPrintAlerts,
+    this.pushStore,
+    PricingController? pricingController,
+  })  : _receipts = receipts ?? ReceiptSequencer(),
+        // Share the order's pricing when the cashier already applied a
+        // discount/voucher during order entry — one source of truth for the
+        // payable preview on both screens.
+        _pricing = pricingController ??
+            PricingController(posApi: posApi, orderId: orderId, config: config, cart: cart) {
+    _pricing.addListener(_onPricingChanged);
+  }
 
   final PosApi posApi;
   final String tenantId;
   final TenantConfig config;
   final String orderId;
   final String? tableName;
+
+  /// Numeric table NUMBER for the print payload — derived from the table label.
+  String get tableNumber {
+    final t = (tableName ?? '').trim();
+    return RegExp(r'^\d+$').hasMatch(t) ? t : '';
+  }
+
+  /// Cashier who opened the order (feeds {cashier_name_opened_bill}); '' when the
+  /// caller has no opener (the token then prints blank, never a wrong name).
+  final String openedByName;
   final Cart cart;
   final String? deviceAssetId;
   final String? shortcode;
   final ReceiptSequencer _receipts;
+
+  /// Durable outbox. When present, a settle that cannot reach the server is
+  /// completed LOCALLY (money flow + receipt id are device-side) and queued as an
+  /// idempotent `order_settle` push; when null the legacy server-only settle runs.
+  final PushStore? pushStore;
+
+  /// True when the last settle completed LOCALLY (offline) and its
+  /// `order_settle` is still queued — the screen can say "will sync later".
+  bool offlineSettled = false;
 
   /// When the order was opened (server `openedAt`). Feeds the recap-window
   /// block on a pre-midnight hanging order. Null → that check is skipped.
@@ -63,20 +96,21 @@ class PaymentController extends ChangeNotifier {
   final PrintDispatcher? printer;
 
   /// Honest print warnings from the last settle (never blocks the sale).
+  /// Filled late — the print runs OFF the settle path, so this is set when the
+  /// printer finally answers, not when [settle] returns.
   List<String> printAlerts = const [];
+
+  /// Delivered the moment a fire-and-forget print finishes with warnings, so the
+  /// operator still sees them after the settle screen has moved on. Wired to the
+  /// app session's shared alert surface; never called with an empty list.
+  final void Function(List<String> alerts)? onPrintAlerts;
 
   final List<money.PaymentInput> payments = [];
 
-  /// Server-confirmed pricing choice: at most ONE discount OR ONE voucher per
-  /// bill. Never set locally — applying or clearing goes through POST
-  /// /api/pos/orders/[id]/pricing and this holds exactly what the SERVER
-  /// returned (empty while an approval is pending).
-  dv.PricingSelection pricing = dv.PricingSelection.none;
-
-  /// True while a below-threshold choice is queued: the bill is AWAITING
-  /// APPROVAL and no discount/voucher is applied yet.
-  bool pricingPending = false;
-  bool pricingBusy = false;
+  /// The order's discount/voucher — shared with order entry (see ctor). All
+  /// apply/clear goes through the server; this holds what the server returned.
+  final PricingController _pricing;
+  PricingController get pricingController => _pricing;
 
   /// The shipment line (separate revenue stream, after SC before rounding).
   /// Null = no shipment line. Set by the cashier BEFORE settle; cancellable
@@ -112,7 +146,7 @@ class PaymentController extends ChangeNotifier {
     final subtotal = lines.fold<double>(0, (s, l) => s + l.subtotal);
     return money.computeMoneyFlow(
       lines,
-      pricing.amountFor(subtotal),
+      _pricing.selection.amountFor(subtotal),
       shipment?.amount ?? 0,
       config.shift.roundingMode,
     );
@@ -161,126 +195,44 @@ class PaymentController extends ChangeNotifier {
   /// Discount/voucher amount applied to the bill (before VAT/SC).
   double get discountAmount => money.round2(_flow.discountAmount);
 
-  dv.DiscountMaster? get appliedDiscount => pricing.discount;
-  dv.VoucherMaster? get appliedVoucher => pricing.voucher;
-
-  List<String> get _lineCategoryIds => [
-        for (final l in cart.lines)
-          if (config.itemById(l.itemId)?.categoryId case final c?) c,
-      ];
+  dv.PricingSelection get pricing => _pricing.selection;
+  dv.DiscountMaster? get appliedDiscount => _pricing.selection.discount;
+  dv.VoucherMaster? get appliedVoucher => _pricing.selection.voucher;
+  bool get pricingPending => _pricing.pending;
+  bool get pricingBusy => _pricing.busy;
 
   /// Discounts offered for the current cart (active, unexpired, category-eligible).
-  List<dv.DiscountMaster> get availableDiscounts => dv.eligibleDiscounts(
-        discounts: config.discounts,
-        lineCategoryIds: _lineCategoryIds,
-        parentById: config.categoryParentId,
-      );
+  List<dv.DiscountMaster> get availableDiscounts => _pricing.availableDiscounts;
 
   /// Vouchers offered for the current cart (active, unexpired, eligible, in quota).
-  List<dv.VoucherMaster> get availableVouchers => dv.eligibleVouchers(
-        vouchers: config.vouchers,
-        lineCategoryIds: _lineCategoryIds,
-        parentById: config.categoryParentId,
-      );
+  List<dv.VoucherMaster> get availableVouchers => _pricing.availableVouchers;
 
   /// Propose applying a discount — the SERVER re-validates and decides. False
   /// (with [error] set) if the server rejected it.
-  Future<bool> applyDiscount(dv.DiscountMaster d) => _setChoice(discountId: d.id);
+  Future<bool> applyDiscount(dv.DiscountMaster d) => _pricing.applyDiscount(d);
 
   /// Propose applying a voucher — the SERVER re-validates and decides.
-  Future<bool> applyVoucher(dv.VoucherMaster v) => _setChoice(voucherId: v.id);
+  Future<bool> applyVoucher(dv.VoucherMaster v) => _pricing.applyVoucher(v);
 
   /// Clear the bill's discount/voucher through the server (ids sent null).
-  Future<bool> cancelPricing() => _setChoice();
+  Future<bool> cancelPricing() => _pricing.cancelPricing();
 
-  /// Tablet proposes; server decides. A below-threshold caller gets a PENDING
-  /// approval — the bill shows awaiting approval and nothing is applied locally.
-  /// On success we ADOPT the server's ids (never a locally computed amount).
-  Future<bool> _setChoice({String? discountId, String? voucherId}) async {
-    pricingBusy = true;
-    pricingPending = false;
-    error = null;
-    notifyListeners();
+  /// Pricing changed (applied here or from order entry): the payable moved, so
+  /// re-allocate the split and surface the pricing error on this controller too.
+  void _onPricingChanged() {
     try {
-      final r = await posApi.setPricing(orderId, discountId: discountId, voucherId: voucherId);
-      if (r['approval'] != null) {
-        pricing = dv.PricingSelection.none;
-        pricingPending = true;
-      } else {
-        final o = r['order'] as Map<String, dynamic>? ?? const {};
-        _adoptServerChoice(o['discountId'] as String?, o['voucherId'] as String?);
-      }
-      _recompute();
-      return true;
-    } on PosApiException catch (e) {
-      error = _pricingMessage(e);
-      notifyListeners();
-      return false;
-    } on PosNetworkException {
-      error = 'No network — discount/voucher not changed.';
-      notifyListeners();
-      return false;
-    } finally {
-      pricingBusy = false;
-      notifyListeners();
+      split = money.finalizePayments(payable, payments);
+    } on money.InsufficientPaymentException {
+      split = null;
     }
+    error = _pricing.error;
+    notifyListeners();
   }
 
-  /// Adopt the server's authoritative choice: map the confirmed id back to the
-  /// server-shipped config master. Any locally computed amount is discarded —
-  /// display and settle money-flow derive from this, mirroring the server.
-  void _adoptServerChoice(String? discountId, String? voucherId) {
-    if (discountId != null) {
-      final d = _discountById(discountId);
-      pricing = d == null ? dv.PricingSelection.none : dv.PricingSelection(discount: d);
-    } else if (voucherId != null) {
-      final v = _voucherById(voucherId);
-      pricing = v == null ? dv.PricingSelection.none : dv.PricingSelection(voucher: v);
-    } else {
-      pricing = dv.PricingSelection.none;
-    }
-  }
-
-  dv.DiscountMaster? _discountById(String id) {
-    for (final d in config.discounts) {
-      if (d.id == id) return d;
-    }
-    return null;
-  }
-
-  dv.VoucherMaster? _voucherById(String id) {
-    for (final v in config.vouchers) {
-      if (v.id == id) return v;
-    }
-    return null;
-  }
-
-  /// Readable message for each server pricing error code.
-  String _pricingMessage(PosApiException e) {
-    switch (e.code) {
-      case 'discount_expired':
-      case 'voucher_expired':
-        return 'That discount or voucher has expired.';
-      case 'discount_inactive':
-      case 'voucher_inactive':
-        return 'That discount or voucher is no longer active.';
-      case 'voucher_exhausted':
-        return 'That voucher has no uses left.';
-      case 'discount_not_eligible':
-      case 'voucher_not_eligible':
-        return 'That discount or voucher does not apply to the items on this bill.';
-      case 'discount_and_voucher_mutually_exclusive':
-        return 'A bill can have only one discount OR one voucher.';
-      case 'discount_not_found':
-      case 'voucher_not_found':
-        return 'That discount or voucher is no longer available.';
-      case 'order_closed':
-        return 'This bill is already closed.';
-      default:
-        return e.isRateLimited
-            ? 'Too many attempts. Wait and retry.'
-            : 'Could not change the discount/voucher (${e.code}).';
-    }
+  @override
+  void dispose() {
+    _pricing.removeListener(_onPricingChanged);
+    super.dispose();
   }
 
   double get paid => money.round2(payments.fold<double>(0, (s, p) => s + p.amount));
@@ -313,7 +265,10 @@ class PaymentController extends ChangeNotifier {
   }
 
   /// Settle: generate the device-side receipt id, then hand the split to the
-  /// server (authoritative ledger + payment snapshots + order close).
+  /// server (authoritative ledger + payment snapshots + order close). When the
+  /// server is UNREACHABLE (offline-first), the sale is completed LOCALLY with
+  /// the same money flow + receipt id and queued as an idempotent
+  /// `order_settle` push — the cashier is never stopped by a dead network.
   Future<bool> settle() async {
     if (!covered) return false;
     // PRD: outside the meal-shift range no payment may complete; a pre-midnight
@@ -326,25 +281,40 @@ class PaymentController extends ChangeNotifier {
     }
     settling = true;
     error = null;
+    offlineSettled = false;
     notifyListeners();
     try {
       final id = await _receipts.next(shortcode: shortcode ?? 'POS', at: DateTime.now());
-      final r = await posApi.settle(
-        orderId,
-        payments: [
-          for (final p in payments) {'outletMethodId': p.outletMethodId, 'amount': p.amount},
-        ],
-        receiptId: id,
-        transactedAt: DateTime.now().toUtc().toIso8601String(),
-        deviceAssetId: deviceAssetId,
-        shipment: shipment?.toSettleBody(),
-      );
-      settled = r['bill'] as Map<String, dynamic>?;
-      receiptId = (settled?['receiptId'] ?? id) as String;
-      // Print the receipt at the settle moment; never blocks or fails the sale.
-      printAlerts = await _printBill();
-      onSettled?.call(settled);
-      return settled != null;
+      try {
+        final r = await posApi.settle(
+          orderId,
+          payments: [
+            for (final p in payments) {'outletMethodId': p.outletMethodId, 'amount': p.amount},
+          ],
+          receiptId: id,
+          transactedAt: DateTime.now().toUtc().toIso8601String(),
+          deviceAssetId: deviceAssetId,
+          shipment: shipment?.toSettleBody(),
+        );
+        settled = r['bill'] as Map<String, dynamic>?;
+        receiptId = (settled?['receiptId'] ?? id) as String;
+        onSettled?.call(settled);
+        // Print the receipt OFF the settle path: the server already recorded the
+        // payment, so a slow/flaky printer (3 attempts × 20s) must never keep the
+        // cashier waiting. The honest warnings arrive later via [printAlerts] and
+        // [onPrintAlerts] — the sale never waits for paper.
+        unawaited(_printBillAndNotify());
+        return settled != null;
+      } on PosNetworkException {
+        // Offline-first: complete the sale locally and queue the push. Without a
+        // durable outbox there is nowhere to keep the settlement, so keep the
+        // legacy honest failure.
+        if (pushStore == null) {
+          error = 'No network — payment not settled.';
+          return false;
+        }
+        return await _settleOffline(id);
+      }
     } on PosApiException catch (e) {
       error = _settleMessage(e);
       return false;
@@ -357,12 +327,135 @@ class PaymentController extends ChangeNotifier {
     }
   }
 
+  /// Complete the sale WITHOUT the server: money flow + receipt id are already
+  /// device-side, so mark the order PAID locally, print the bill (local path),
+  /// and queue the full snapshot as an idempotent `order_settle` push. Returns
+  /// true (the sale is done); the push is a background concern.
+  Future<bool> _settleOffline(String id) async {
+    receiptId = id;
+    final key = id; // unique per settlement (device shortcode + day + seq)
+    final now = DateTime.now();
+    final payload = _settlementPayload(key, now);
+    try {
+      await pushStore!.enqueue('order_settle', key, payload);
+    } catch (_) {
+      // Never lose the sale to an outbox write failure; the cashier is told via
+      // the Today's list (pending) once the queue is readable again.
+    }
+    final bill = <String, dynamic>{
+      'orderId': orderId,
+      'receiptId': id,
+      'status': 'PAID',
+      'total': payable,
+      'change': money.round2(split?.change ?? 0),
+      'tipsPending': money.round2(split?.tips ?? 0),
+      'paidAt': now.toUtc().toIso8601String(),
+      'offline': true,
+      'clientSettlementKey': key,
+    };
+    settled = bill;
+    offlineSettled = true;
+    onSettled?.call(bill);
+    unawaited(_printBillAndNotify());
+    return true;
+  }
+
+  /// The FULL settlement snapshot for `POST /orders/{id}/settle-deferred`.
+  /// Prices come from the ACTUAL cart lines (never recomputed from the master,
+  /// which may have changed) so the server replays exactly what the cashier rang.
+  Map<String, dynamic> _settlementPayload(String key, DateTime now) {
+    final sel = _pricing.selection;
+    final pay = split;
+    return {
+      'orderId': orderId,
+      'clientSettlementKey': key,
+      'receiptId': receiptId ?? key,
+      'paidAt': now.toUtc().toIso8601String(),
+      if (openedAt != null) 'openedAt': openedAt!.toUtc().toIso8601String(),
+      'closedAt': now.toUtc().toIso8601String(),
+      'lines': [
+        for (final l in cart.lines)
+          {
+            'itemId': l.itemId,
+            'itemName': l.name,
+            'qty': l.qty,
+            'priceLevelIndex': l.priceLevelIndex,
+            'unitPrice': l.unitPrice,
+            'vatMode': _modeName(l.vatMode),
+            'scMode': _modeName(l.scMode),
+            'mods': [
+              for (final m in l.modifiers)
+                {
+                  if (m.modifierId != null) 'modifierId': m.modifierId,
+                  'name': m.name,
+                  'price': m.price,
+                  'qty': m.qty,
+                  if (m.openText != null) 'openText': m.openText,
+                },
+            ],
+          },
+      ],
+      'payments': [
+        for (final p in payments)
+          {
+            'outletMethodId': p.outletMethodId,
+            'name': _methodName(p.outletMethodId),
+            'type': p.type == money.PayType.cash ? 'CASH' : 'NON_CASH',
+            'amount': p.amount,
+            if (p.reference != null) 'reference': p.reference,
+          },
+      ],
+      'totals': {
+        'subtotal': money.round2(_flow.subtotal),
+        'discountAmount': money.round2(_flow.discountAmount),
+        'vatAmount': money.round2(_flow.vatAmount),
+        'scAmount': money.round2(_flow.scAmount),
+        'shipmentAmount': money.round2(_flow.shipmentAmount),
+        'roundingAmount': money.round2(_flow.roundingAmount),
+        'tipsAmount': money.round2(pay?.tips ?? 0),
+        'total': payable,
+        'change': money.round2(pay?.change ?? 0),
+        'paidAmount': paid,
+      },
+      'discountId': sel.discount?.id,
+      'voucherId': sel.voucher?.id,
+      if (deviceAssetId != null) 'deviceId': deviceAssetId,
+    };
+  }
+
+  String _methodName(String outletMethodId) {
+    for (final m in config.paymentMethods) {
+      if (m.id == outletMethodId) return m.displayName;
+    }
+    return '';
+  }
+
+  static String _modeName(money.VatScMode m) => switch (m) {
+        money.VatScMode.include => 'INCLUDE',
+        money.VatScMode.exclude => 'EXCLUDE',
+        money.VatScMode.none => 'NONE',
+      };
+
+  /// Run [printBill] without holding the settle caller: fill [printAlerts] and
+  /// publish any honest warnings when it finally finishes, even if the screen is
+  /// gone. Never throws (the dispatcher path is already best-effort).
+  Future<void> _printBillAndNotify() async {
+    final alerts = await _printBill();
+    printAlerts = alerts;
+    if (alerts.isNotEmpty) onPrintAlerts?.call(alerts);
+  }
+
   Future<List<String>> _printBill() async {
     final d = printer;
     final s = split;
     if (d == null || s == null) return const [];
-    final items = [for (final l in cart.lines) PrintItem.fromCartLine(l)];
+    // The printed bill merges identical picks into one row (qty summed).
+    final items = mergePrintItems([for (final l in cart.lines) PrintItem.fromCartLine(l)]);
     final names = {for (final m in config.paymentMethods) m.id: m.displayName};
+    // Discount/voucher are mutually exclusive (1 bill = 1). The applied amount
+    // is already inside the money-flow; split it onto the right caption so the
+    // printed bill matches the preview.
+    final sel = _pricing.selection;
     try {
       final out = await d.printBill(
         items: items,
@@ -371,6 +464,15 @@ class PaymentController extends ChangeNotifier {
         split: s,
         methodNames: names,
         tableName: tableName,
+        tableNumber: tableNumber,
+        openedBy: openedByName,
+        discountName: sel.discount?.name ?? '',
+        voucherName: sel.voucher?.name ?? '',
+        discountAmount: sel.discount != null ? _flow.discountAmount : 0.0,
+        voucherAmount: sel.voucher != null ? _flow.discountAmount : 0.0,
+        // A CASH sale pops the drawer (wired to the receipt printer). The pulse
+        // rides THIS bill job — same connection, same queue, works offline.
+        openDrawer: payments.any((p) => p.type == money.PayType.cash),
       );
       return out.alerts;
     } catch (_) {

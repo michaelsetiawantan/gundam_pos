@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
-import 'package:gundam_pos/logic/discount_voucher.dart' as dv;
 import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
+import 'package:gundam_pos/ui/money_input.dart';
 import 'package:gundam_pos/ui/payment_success_screen.dart';
+import 'package:gundam_pos/ui/pricing_panel.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
@@ -27,7 +27,8 @@ class _PaymentScreenState extends State<PaymentScreen> {
   Future<void> _add(OutletPaymentMethod method) async {
     final amount = await showModalBottomSheet<double>(
       context: context,
-      builder: (_) => _AmountSheet(method: method, maxSuggested: c.remaining),
+      builder: (_) => _AmountSheet(
+        method: method, maxSuggested: c.remaining, currency: c.config.shift.currencyLabel),
     );
     if (amount == null || amount <= 0 || !mounted) return;
     setState(() => c.addPayment(method, amount));
@@ -40,7 +41,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
         context: context,
         builder: (ctx) => AlertDialog(
           title: const Text('Overpayment'),
-          content: Text('${c.tipsPending.toStringAsFixed(0)} will be recorded as a pending tip. Continue?'),
+          content: Text('${_fmt(c.tipsPending)} will be recorded as a pending tip. Continue?'),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
             FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Continue')),
@@ -56,20 +57,33 @@ class _PaymentScreenState extends State<PaymentScreen> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.error ?? 'Settlement failed')));
       return;
     }
-    // Success → receipt; close the order stack back to Open Tables.
+    // A print warning never blocks the sale — mention it, then still show the
+    // receipt (the operator must never be left without proof of payment).
     if (c.printAlerts.isNotEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(c.printAlerts.first)));
     }
+    // Success → receipt; close the order stack back to Open Tables. The bill is
+    // parsed defensively (a Decimal can arrive as a string) and the push is the
+    // ONLY thing between a paid bill and the operator seeing it — a throw here
+    // used to swallow the success page while the server had already settled.
+    final bill = c.settled;
     await Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => PaymentSuccessScreen(
         receiptId: c.receiptId ?? '',
-        total: c.settled?['total'] ?? c.payable,
-        change: ((c.settled?['change'] ?? c.change) as num).toDouble(),
-        tipsPending: ((c.settled?['tipsPending'] ?? c.tipsPending) as num).toDouble(),
+        total: bill?['total'] ?? c.payable,
+        change: _num(bill?['change'] ?? c.change),
+        tipsPending: _num(bill?['tipsPending'] ?? c.tipsPending),
+        currency: c.config.shift.currencyLabel,
       ),
     ));
     if (!mounted) return;
     Navigator.of(context).popUntil((r) => r.isFirst);
+  }
+
+  /// Server Decimals may serialise as numbers OR strings — accept both.
+  static double _num(Object? v) {
+    if (v is num) return v.toDouble();
+    return double.tryParse('${v ?? ''}') ?? 0;
   }
 
   @override
@@ -91,7 +105,7 @@ class _PaymentScreenState extends State<PaymentScreen> {
               ],
               _TotalCard(controller: c),
               const SizedBox(height: 16),
-              _PricingPanel(controller: c),
+              PricingPanel(controller: c.pricingController, currency: c.config.shift.currencyLabel),
               const SizedBox(height: 16),
               _ShipmentPanel(controller: c),
               const SizedBox(height: 16),
@@ -139,10 +153,11 @@ class _PaymentScreenState extends State<PaymentScreen> {
 
   String get balanceLabel {
     final ch = c.change;
-    if (ch > 0) return '· change ${ch.toStringAsFixed(0)}';
+    if (ch > 0) return '· change ${_fmt(ch)}';
     if (c.tipsPending > 0) return '· tip pending';
     return '';
   }
+  String _fmt(double v) => money.moneyLabel(v, c.config.shift.currencyLabel);
 }
 
 class _TotalCard extends StatelessWidget {
@@ -189,105 +204,7 @@ class _TotalCard extends StatelessWidget {
     );
   }
 
-  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
-}
-
-/// Inline discount / voucher panel. Offers the eligible masters for the cart
-/// (category-inherited), enforces one-per-bill, and can cancel the applied one.
-class _PricingPanel extends StatelessWidget {
-  const _PricingPanel({required this.controller});
-  final PaymentController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = controller;
-    final dm = c.appliedDiscount;
-    final vm = c.appliedVoucher;
-    final discounts = c.availableDiscounts;
-    final vouchers = c.availableVouchers;
-    if (dm == null && vm == null && discounts.isEmpty && vouchers.isEmpty && !c.pricingPending) {
-      return const SizedBox.shrink();
-    }
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: PosTheme.line),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('Discount / Voucher', style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.petrol, fontSize: 15)),
-        const SizedBox(height: 10),
-        if (c.pricingPending)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 10),
-            child: Row(children: [
-              Icon(Icons.hourglass_top, size: 18, color: PosTheme.slate),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text('Awaiting approval — no discount applied yet.',
-                    style: TextStyle(fontWeight: FontWeight.w700, color: PosTheme.slate)),
-              ),
-            ]),
-          ),
-        if (dm != null || vm != null)
-          Row(children: [
-            Expanded(
-              child: Text(
-                dm != null ? 'Discount: ${dm.name}' : 'Voucher: ${vm!.name}',
-                style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ink),
-              ),
-            ),
-            Text('− ${_fmt(c.discountAmount)}', style: const TextStyle(fontWeight: FontWeight.w700, color: PosTheme.ok)),
-            const SizedBox(width: 8),
-            IconButton(
-              tooltip: 'Cancel discount/voucher',
-              onPressed: c.pricingBusy ? null : () => _run(context, c, c.cancelPricing),
-              icon: const Icon(Icons.close, color: PosTheme.danger),
-            ),
-          ])
-        else if (!c.pricingPending) ...[
-          if (discounts.isNotEmpty) ...[
-            const Text('Discounts', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
-            const SizedBox(height: 6),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              for (final d in discounts)
-                ActionChip(
-                  label: Text('${d.name} (${_label(d)})'),
-                  onPressed: c.pricingBusy ? null : () => _run(context, c, () => c.applyDiscount(d)),
-                ),
-            ]),
-            const SizedBox(height: 10),
-          ],
-          if (vouchers.isNotEmpty) ...[
-            const Text('Vouchers', style: TextStyle(color: PosTheme.slate, fontSize: 13)),
-            const SizedBox(height: 6),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              for (final v in vouchers)
-                ActionChip(
-                  label: Text('${v.name} (${_label(v)})'),
-                  onPressed: c.pricingBusy ? null : () => _run(context, c, () => c.applyVoucher(v)),
-                ),
-            ]),
-          ],
-        ],
-      ]),
-    );
-  }
-
-  /// Runs a server-backed pricing action; surfaces a readable message on failure.
-  static Future<void> _run(BuildContext context, PaymentController c, Future<bool> Function() action) async {
-    final ok = await action();
-    if (!context.mounted || ok) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(c.error ?? 'Could not change the discount/voucher.')),
-    );
-  }
-
-  static String _label(dv.PricingMaster m) =>
-      m.kind == dv.PricingKind.percentage ? '${_fmt(m.value)}%' : _fmt(m.value);
-  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+  String _fmt(double v) => money.moneyLabel(v, controller.config.shift.currencyLabel);
 }
 
 /// Shipment step — a SEPARATE revenue line (outside discount/voucher, VAT, SC;
@@ -314,7 +231,8 @@ class _ShipmentPanelState extends State<_ShipmentPanel> {
   }
 
   void _addOpen() {
-    final ok = c.setOpenShipment(_amount.text);
+    // Strip the display grouping: the value must stay a plain number.
+    final ok = c.setOpenShipment(_amount.text.replaceAll(kThousandsSeparator, ''));
     if (!ok) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(c.error ?? 'Invalid shipment amount.')),
@@ -362,7 +280,8 @@ class _ShipmentPanelState extends State<_ShipmentPanel> {
               child: TextField(
                 key: const Key('shipment-amount'),
                 controller: _amount,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType: TextInputType.number,
+                inputFormatters: const [ThousandsInputFormatter()],
                 decoration: InputDecoration(
                   isDense: true,
                   hintText: '0',
@@ -405,7 +324,7 @@ class _ShipmentPanelState extends State<_ShipmentPanel> {
     );
   }
 
-  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+  String _fmt(double v) => money.moneyLabel(v, c.config.shift.currencyLabel);
 }
 
 class _PaymentsList extends StatelessWidget {
@@ -433,11 +352,14 @@ class _PaymentsList extends StatelessWidget {
     ]);
   }
 
-  static String _fmt(double v) => v == v.roundToDouble() ? '${v.toInt()}' : v.toStringAsFixed(2);
+  String _fmt(double v) => money.moneyLabel(v, controller.config.shift.currencyLabel);
 }
 
 class _AmountSheet extends StatefulWidget {
-  const _AmountSheet({required this.method, required this.maxSuggested});
+  const _AmountSheet({required this.method, required this.maxSuggested, required this.currency});
+
+  /// Outlet currency label for the amount dialog prefix.
+  final String currency;
   final OutletPaymentMethod method;
   final double maxSuggested;
 
@@ -451,7 +373,7 @@ class _AmountSheetState extends State<_AmountSheet> {
   @override
   void initState() {
     super.initState();
-    _amount.text = widget.maxSuggested > 0 ? '${widget.maxSuggested.round()}' : '';
+    _amount.text = widget.maxSuggested > 0 ? formatMoneyInput(widget.maxSuggested) : '';
   }
 
   @override
@@ -476,15 +398,17 @@ class _AmountSheetState extends State<_AmountSheet> {
               controller: _amount,
               autofocus: true,
               keyboardType: TextInputType.number,
-              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              inputFormatters: const [ThousandsInputFormatter()],
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
-              decoration: const InputDecoration(prefixText: 'Rp '),
+              decoration: InputDecoration(
+                prefixText: widget.currency.trim().isEmpty ? null : '${widget.currency.trim()} ',
+              ),
             ),
             const SizedBox(height: 20),
             PrimaryButton(
               label: 'Add payment',
-              onPressed: () => Navigator.pop(context, double.tryParse(_amount.text.trim()) ?? 0),
+              onPressed: () => Navigator.pop(context, parseMoneyInput(_amount.text)),
             ),
           ]),
         ),

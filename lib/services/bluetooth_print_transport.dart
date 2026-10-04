@@ -6,9 +6,11 @@
 /// [PrinterLinkState]; the queue then retries per the printer's policy.
 library;
 
+import 'package:gundam_pos/logic/print_format_render.dart';
 import 'package:gundam_pos/services/bluetooth_printer_channel.dart';
 import 'package:gundam_pos/services/escpos.dart';
 import 'package:gundam_pos/services/print_broker.dart';
+import 'package:gundam_pos/services/print_image.dart';
 import 'package:gundam_pos/services/printer_health.dart';
 
 /// A Bluetooth fault, mapped to a PRD status. Never crashes the caller.
@@ -23,12 +25,33 @@ class BluetoothPrintException implements Exception {
 }
 
 class BluetoothPrintTransport implements PrintTransport {
-  BluetoothPrintTransport({BluetoothPrinterChannel? channel, int? connectTimeoutMs})
-      : _channel = channel ?? BluetoothPrinterChannel(),
-        _connectTimeoutMs = connectTimeoutMs ?? 8000;
+  BluetoothPrintTransport({
+    BluetoothPrinterChannel? channel,
+    int? connectTimeoutMs,
+    PrintImageSource? Function()? imageSourceProvider,
+  })  : _channel = channel ?? BluetoothPrinterChannel(),
+        _connectTimeoutMs = connectTimeoutMs ?? 8000,
+        _imageSourceProvider = imageSourceProvider;
 
   final BluetoothPrinterChannel _channel;
   final int _connectTimeoutMs;
+
+  /// Resolves an IMAGE block's `assetKey` to cached bytes. Read at SEND time (the
+  /// media cache is wired after construction); null → labelled placeholder.
+  final PrintImageSource? Function()? _imageSourceProvider;
+
+  /// IMAGE entries need the async resolver (decode + dither); a ticket without
+  /// them takes the synchronous encoder exactly as before.
+  Future<List<int>> _encode(PrintJob job) async {
+    final source = _imageSourceProvider?.call();
+    final needsRaster = source != null &&
+        job.printer.supportsRasterImage &&
+        job.entries.any((e) => e.kind == PrintableKind.image);
+    if (needsRaster) {
+      return (await encodePrintJobWithImages(job, source: source, widthMm: job.printer.widthMm)).bytes;
+    }
+    return encodePrintJob(job, widthMm: job.printer.widthMm);
+  }
 
   /// Send one job: adapter/permission check → ensure SPP connected → write the
   /// ESC/POS bytes. Throws [BluetoothPrintException] on any fault.
@@ -42,7 +65,7 @@ class BluetoothPrintTransport implements PrintTransport {
       );
     }
     await _ensureReady(mac);
-    final result = await _channel.write(encodePrintJob(job, widthMm: job.printer.widthMm));
+    final result = await _channel.write(await _encode(job));
     if (!result.ok) {
       throw BluetoothPrintException(printerLinkStateFromCode(result.state), result.detail);
     }

@@ -86,6 +86,16 @@ void main() {
       expect(money.round2(1.034), 1.03);
     });
   });
+
+  group('offline sync flags default off (legacy lines unchanged)', () {
+    test('a plain line is not pending/failed and has no localKey', () {
+      final line = _line('i1', 1);
+      expect(line.pending, isFalse);
+      expect(line.failed, isFalse);
+      expect(line.localKey, isNull);
+      expect(line.unitPriceWithMods, 10000);
+    });
+  });
 }
 
 CartLine _line(String id, int qty, {int level = 0, String? mod, bool sent = false}) => CartLine(

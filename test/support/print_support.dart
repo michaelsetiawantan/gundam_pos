@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:gundam_pos/data/print_format_store.dart';
+import 'package:gundam_pos/logic/money.dart' as money;
 import 'package:gundam_pos/logic/print_payload.dart';
 import 'package:gundam_pos/services/print_broker.dart';
 import 'package:gundam_pos/services/print_dispatcher.dart';
@@ -14,6 +17,56 @@ class RecordingTransport implements PrintTransport {
 
   @override
   Future<void> send(PrintJob job) async => jobs.add(job);
+}
+
+/// Blocks every print on a [Completer] gate: a test can prove a controller
+/// returns BEFORE the printer finishes (settle/send-cart off the print path),
+/// then release the gate and assert the late alert still arrives.
+class GatedDispatcher extends PrintDispatcher {
+  GatedDispatcher()
+      : super(
+          broker: PrintBroker(store: PrintFormatStore(), queue: PrintQueue(transport: RecordingTransport())),
+          routing: PrinterRouting.parse(FakeBackend.northstarPrintModel()),
+        );
+
+  final Completer<void> gate = Completer<void>();
+  int billCalls = 0;
+  int sendCartCalls = 0;
+
+  @override
+  Future<PrintOutcome> printBill({
+    required List<PrintItem> items,
+    required String receiptId,
+    required money.MoneyFlow flow,
+    required money.SplitResult split,
+    Map<String, String> methodNames = const {},
+    String? tableName,
+    String? tableNumber,
+    String? openedBy,
+    DateTime? paidAt,
+    bool reprint = false,
+    String discountName = '',
+    String voucherName = '',
+    double? discountAmount,
+    double? voucherAmount,
+    bool openDrawer = false,
+  }) async {
+    billCalls++;
+    await gate.future;
+    return const PrintOutcome(alerts: ['BILL printer offline — test.']);
+  }
+
+  @override
+  Future<PrintOutcome> printSendCart({
+    required List<PrintItem> items,
+    String? tableName,
+    String? tableNumber,
+    String? openedBy,
+  }) async {
+    sendCartCalls++;
+    await gate.future;
+    return const PrintOutcome(alerts: ['CAPTAIN printer offline — test.']);
+  }
 }
 
 /// Fails every send — used to exercise the FAILED audit row.

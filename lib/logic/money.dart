@@ -207,3 +207,41 @@ MoneyFlow computeMoneyFlow(
     total: r.total,
   );
 }
+
+// --------------------------------------------------------------- display ---
+
+/// DISPLAY-ONLY money text, exactly as the operator should read it:
+/// `Rp. 1.000,00` — the currency label stored on the server, a dot after it,
+/// dot-grouped thousands and ALWAYS two decimals (comma). It never touches a
+/// value: maths keeps using the plain numbers, this is presentation only.
+///
+/// [currencyLabel] empty → no prefix (just `1.000,00`). A label that already
+/// ends in a dot is not given a second one.
+/// The two halves of a money cell: the currency LABEL (`Rp.`) and the grouped
+/// digits (`1.000,00`). Printers lay these out as TWO aligned columns so the
+/// currency never drifts when the amount gets shorter.
+({String label, String digits}) moneyParts(num value, String currencyLabel) {
+  final text = moneyLabel(value, currencyLabel);
+  final cut = text.indexOf(' ');
+  if (cut < 0) return (label: '', digits: text);
+  return (label: text.substring(0, cut), digits: text.substring(cut + 1));
+}
+
+String moneyLabel(num value, String currencyLabel) {
+  final negative = value < 0;
+  final centsTotal = (value.abs() * 100).round(); // round once, no float drift
+  final whole = centsTotal ~/ 100;
+  final cents = centsTotal % 100;
+
+  final digits = whole.toString();
+  final buf = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) buf.write('.');
+    buf.write(digits[i]);
+  }
+
+  final label = currencyLabel.trim();
+  final prefix = label.isEmpty ? '' : (label.endsWith('.') ? '$label ' : '$label. ');
+
+  return '${negative ? '-' : ''}$prefix$buf,${cents.toString().padLeft(2, '0')}';
+}

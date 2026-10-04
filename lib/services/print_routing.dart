@@ -198,8 +198,9 @@ class ClientPrinter {
 
   bool get dialectRecognized => isKnownDialect(dialect);
 
-  /// true only when this build really encodes the dialect (declared families
-  /// like Star/Citizen are recognised but not implemented).
+  /// true only when this build really encodes the dialect. Every registry
+  /// dialect (Epson, clone, Star Line Mode, Citizen) is implemented; this is
+  /// false only for a `protocol` the registry does not carry.
   bool get dialectImplemented => isImplementedDialect(dialect);
 
   /// Effective raster capability: the printer's own flag OR the model's.
@@ -239,7 +240,7 @@ class RoutingEntry {
   final int? batchStep;
 }
 
-/// Strict item-level captain/bev assignment (no category fallback).
+/// Strict item-level captain/bev assignment (an explicit override).
 class ItemRoute {
   const ItemRoute({required this.itemId, this.captainPrinterId, this.bevPrinterId});
 
@@ -254,9 +255,50 @@ class ItemRoute {
   final String? bevPrinterId;
 }
 
+/// CATEGORY station assignment (per outlet): which printer prints this menu's
+/// captain sheet / bev label. `parentId` lets a sub-category inherit.
+class CategoryRoute {
+  const CategoryRoute({
+    required this.categoryId,
+    this.parentId,
+    this.captainPrinterId,
+    this.bevPrinterId,
+    this.name = '',
+  });
+
+  static CategoryRoute fromJson(Map<String, dynamic> j) => CategoryRoute(
+        categoryId: (j['categoryId'] as String?) ?? '',
+        parentId: j['parentId'] as String?,
+        captainPrinterId: j['captainPrinterId'] as String?,
+        bevPrinterId: j['bevPrinterId'] as String?,
+        name: (j['name'] as String?) ?? '',
+      );
+
+  final String categoryId;
+  final String? parentId;
+  final String? captainPrinterId;
+  final String? bevPrinterId;
+
+  /// MENU label printed as the grouped header ('' when the payload omits it).
+  final String name;
+}
+
+/// What one line resolves to (null = not routed, never guessed).
+class StationTarget {
+  const StationTarget({this.captainPrinterId, this.bevPrinterId});
+
+  final String? captainPrinterId;
+  final String? bevPrinterId;
+}
+
 /// Parsed outlet printer model + resolvers.
 class PrinterRouting {
-  PrinterRouting({required this.printers, required this.routing, required this.itemRoutes});
+  PrinterRouting({
+    required this.printers,
+    required this.routing,
+    required this.itemRoutes,
+    this.categoryRoutes = const {},
+  });
 
   static final PrinterRouting empty =
       PrinterRouting(printers: const [], routing: const {}, itemRoutes: const {});
@@ -264,6 +306,12 @@ class PrinterRouting {
   final List<ClientPrinter> printers;
   final Map<String, List<RoutingEntry>> routing; // by target: BILL/CAPTAIN_ORDER/BEV_LABEL
   final Map<String, ItemRoute> itemRoutes; // by itemId
+  /// Category station assignment, per outlet — keyed by categoryId.
+  final Map<String, CategoryRoute> categoryRoutes;
+
+  /// itemId → categoryId, filled from the synced catalog (the printer payload
+  /// has no items). Empty → item routes only, exactly as before.
+  Map<String, String> itemCategories = const {};
 
   /// Parse the OUTLET payload (or its `printers`/`routing`/`itemRoutes` keys).
   /// Never throws.
@@ -306,7 +354,24 @@ class PrinterRouting {
         }
       }
 
-      return PrinterRouting(printers: printers, routing: routing, itemRoutes: itemRoutes);
+      // CATEGORY station assignment (per outlet). Absent → empty, and the
+      // resolver falls back to the item routes exactly as before.
+      final categoryRoutes = <String, CategoryRoute>{};
+      final rawCategories = payload['categoryRoutes'];
+      if (rawCategories is List) {
+        for (final e in rawCategories) {
+          if (e is! Map) continue;
+          final c = CategoryRoute.fromJson(Map<String, dynamic>.from(e));
+          if (c.categoryId.isNotEmpty) categoryRoutes[c.categoryId] = c;
+        }
+      }
+
+      return PrinterRouting(
+        printers: printers,
+        routing: routing,
+        itemRoutes: itemRoutes,
+        categoryRoutes: categoryRoutes,
+      );
     } catch (_) {
       return empty;
     }
@@ -354,6 +419,53 @@ class PrinterRouting {
   ClientPrinter? bevPrinterForItem(String itemId) {
     final p = printerById(itemRoutes[itemId]?.bevPrinterId);
     return (p != null && p.active) ? p : null;
+  }
+
+  /// Resolve the STATION printers of one item:
+  ///   item override → nearest ancestor category with a station → null
+  /// Nulls stay null (the caller decides the routing fallback); nothing is
+  /// guessed. `itemCategories` supplies itemId → categoryId because the printer
+  /// model payload carries printers, not the catalog.
+  StationTarget stationForItem(String itemId) {
+    final route = itemRoutes[itemId];
+    String? captain = route?.captainPrinterId;
+    String? bev = route?.bevPrinterId;
+    var catId = itemCategories[itemId];
+    final guard = <String>{};
+    while ((captain == null || bev == null) && catId != null && guard.add(catId)) {
+      final c = categoryRoutes[catId];
+      if (c == null) break;
+      captain ??= c.captainPrinterId;
+      bev ??= c.bevPrinterId;
+      catId = c.parentId;
+    }
+    return StationTarget(captainPrinterId: captain, bevPrinterId: bev);
+  }
+
+  /// The resolved captain printer of an item (item override → category chain).
+  ClientPrinter? captainPrinterForLine(String itemId) {
+    final p = printerById(stationForItem(itemId).captainPrinterId);
+    return (p != null && p.active) ? p : null;
+  }
+
+  /// The resolved bev-label printer of an item.
+  ClientPrinter? bevPrinterForLine(String itemId) {
+    final p = printerById(stationForItem(itemId).bevPrinterId);
+    return (p != null && p.active) ? p : null;
+  }
+
+  /// MENU label of an item — the grouped kitchen header. Walks the category
+  /// chain so a sub-category without its own name still labels its menu.
+  String menuForItem(String itemId) {
+    var catId = itemCategories[itemId];
+    final guard = <String>{};
+    while (catId != null && guard.add(catId)) {
+      final c = categoryRoutes[catId];
+      if (c == null) break;
+      if (c.name.isNotEmpty) return c.name;
+      catId = c.parentId;
+    }
+    return '';
   }
 
   /// Known-transport printers this build cannot print to — reported, not dropped.

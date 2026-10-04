@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:gundam_pos/data/print_log_store.dart';
+import 'package:gundam_pos/services/diagnostic_report.dart';
 import 'package:gundam_pos/services/print_log.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/ui/theme.dart';
@@ -27,11 +28,45 @@ class _PrintDiagnosticsScreenState extends State<PrintDiagnosticsScreen> {
   Map<String, int> _counts = const {};
   bool _loading = true;
   bool _uploading = false;
+  final TextEditingController _description = TextEditingController();
+  bool _sending = false;
 
   @override
   void initState() {
     super.initState();
     _reload();
+    widget.session.refreshDiagnosticPending();
+  }
+
+  @override
+  void dispose() {
+    _description.dispose();
+    super.dispose();
+  }
+
+  /// Collect one bundle (device context + print summary + recent log lines +
+  /// this description) and ship it. Offline it is queued in the outbox and goes
+  /// on the next sync — never lost.
+  Future<void> _sendDiagnostics() async {
+    final desc = _description.text.trim();
+    if (desc.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Describe the issue in a few words before sending.')),
+      );
+      return;
+    }
+    setState(() => _sending = true);
+    final res = await widget.session.sendDiagnostics(description: desc);
+    if (!mounted) return;
+    setState(() => _sending = false);
+    if (res.sent > 0) _description.clear();
+    final why = widget.session.lastDiagnosticFailure;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(res.sent > 0
+          ? 'Diagnostic report sent to the server.'
+          : 'Report queued (${res.pending} pending)'
+              '${why == null ? '' : ' — $why'}. It retries on the next sync.'),
+    ));
   }
 
   Future<void> _reload() async {
@@ -55,15 +90,39 @@ class _PrintDiagnosticsScreenState extends State<PrintDiagnosticsScreen> {
 
   Future<void> _retryUpload() async {
     setState(() => _uploading = true);
-    final uploaded = await widget.session.uploadPrintLogs();
+    await widget.session.uploadPrintLogs();
     if (!mounted) return;
     setState(() => _uploading = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(uploaded > 0
-          ? '$uploaded print log(s) uploaded.'
-          : 'Nothing uploaded — ${widget.session.printLogPending} still pending (offline?).'),
+      content: Text(_uploadMessage(widget.session.lastPrintLogUpload)),
     ));
     await _reload();
+  }
+
+  /// Honest result text. Never confuses a server rejection or an unreachable
+  /// server with the *printer* being offline — this uploads log rows over HTTP,
+  /// it has nothing to do with printer connectivity.
+  String _uploadMessage(PrintLogUploadResult? res) {
+    final pending = widget.session.printLogPending;
+    if (res == null) {
+      return pending == 0
+          ? 'Nothing to upload — no print logs are pending.'
+          : 'Upload did not run — re-activate or re-login this tablet, then retry. $pending print log(s) still queued.';
+    }
+    if (res.remaining == 0 && res.uploaded == 0 && res.failed == 0) {
+      return 'Nothing to upload — no print logs are pending.';
+    }
+    if (res.offline) {
+      return 'Could not reach the server — ${res.remaining} print log(s) still queued. '
+          'They upload automatically on the next sync. (This is a server/network issue, not the printer.)';
+    }
+    if (res.failed > 0) {
+      final why = res.rejectedCodes.isEmpty ? 'server rejected them' : 'rejected: ${res.rejectedCodes.join(', ')}';
+      return '${res.uploaded} uploaded, ${res.failed} $why. ${res.remaining} still queued.';
+    }
+    return res.remaining == 0
+        ? '${res.uploaded} print log(s) uploaded. Queue is empty.'
+        : '${res.uploaded} print log(s) uploaded — ${res.remaining} still queued.';
   }
 
   String _entryText(PrintLogRow r) {
@@ -133,7 +192,8 @@ class _PrintDiagnosticsScreenState extends State<PrintDiagnosticsScreen> {
                   Text('Pending upload: ${widget.session.printLogPending} of ${_counts.values.fold<int>(0, (a, b) => a + b)} local row(s)',
                       style: const TextStyle(fontWeight: FontWeight.w700)),
                   const SizedBox(height: 4),
-                  const Text('Rows ship to POST /api/pos/print-logs in id-keyed batches; nothing is lost while offline.',
+                  const Text('Rows upload to the server (POST /api/pos/print-logs) in id-keyed batches — '
+                      'this is a server upload, unrelated to printer connectivity. Nothing is lost while the network is down.',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                   const SizedBox(height: 12),
                   FilledButton.icon(
@@ -142,6 +202,35 @@ class _PrintDiagnosticsScreenState extends State<PrintDiagnosticsScreen> {
                         ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                         : const Icon(Icons.cloud_upload),
                     label: const Text('Retry upload'),
+                  ),
+                ]),
+              ),
+              _card(
+                title: 'Report issue to server',
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Pending diagnostic reports: ${widget.session.diagnosticPending}',
+                      style: const TextStyle(fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 4),
+                  const Text('Bundles the device context, the print-log summary and recent app log lines with your note, then ships it to the super-admin for analysis. Offline, it is queued and sent on the next sync.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _description,
+                    maxLength: kDiagMaxDescriptionLen,
+                    minLines: 2,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'What went wrong?',
+                      hintText: 'e.g. Kitchen printer prints blank tickets since this morning.',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _sending ? null : _sendDiagnostics,
+                    icon: _sending
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.send),
+                    label: const Text('Send diagnostics'),
                   ),
                 ]),
               ),

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gundam_pos/logic/money.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gundam_pos/logic/cart.dart';
 import 'package:gundam_pos/models/config_models.dart';
@@ -157,6 +158,6 @@ void main() {
     await tester.tap(find.textContaining('Add'));
     await tester.pumpAndSettle();
     expect(find.text('1 item(s)'), findsOneWidget);
-    expect(find.textContaining('25000'), findsWidgets); // price on card + cart total
+    expect(find.textContaining(moneyLabel(25000, 'Rp')), findsWidgets); // price on card + cart total
   });
 }

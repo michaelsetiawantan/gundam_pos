@@ -78,6 +78,7 @@ class MenuItem {
     this.isOpenPrice = false,
     this.captainPrinterId,
     this.bevPrinterId,
+    this.imageKey,
   });
 
   factory MenuItem.fromJson(Map<String, dynamic> j) {
@@ -110,11 +111,15 @@ class MenuItem {
       isOpenPrice: (j['isOpenPrice'] as bool?) ?? false,
       captainPrinterId: j['captainPrinterId'] as String?,
       bevPrinterId: j['bevPrinterId'] as String?,
+      // Uploaded tile image (media asset key) — absent → the built-in icon.
+      imageKey: (j['imageKey'] as String?)?.trim().isEmpty ?? true ? null : j['imageKey'] as String?,
     );
   }
 
   final String id;
   final String name;
+  /// Media-asset key of the uploaded tile image (null → draw the built-in icon).
+  final String? imageKey;
   final String itemcode;
   final String sku;
   final String categoryId;
@@ -142,6 +147,7 @@ class MenuNode {
     this.sortOrder = 0,
     this.children = const [],
     this.itemIds = const [],
+    this.imageKey,
   });
 
   factory MenuNode.fromJson(Map<String, dynamic> j) {
@@ -150,6 +156,8 @@ class MenuNode {
       id: j['id'] as String,
       parentId: j['parentId'] as String?,
       name: j['name'] as String,
+      // Uploaded tile image (media asset key) — absent → the built-in icon.
+      imageKey: (j['imageKey'] as String?)?.trim().isEmpty ?? true ? null : j['imageKey'] as String?,
       sortOrder: (j['sortOrder'] as num?)?.toInt() ?? 0,
       itemIds: assign?.map((a) {
         if (a is Map) return a['itemId'] as String? ?? '';
@@ -166,6 +174,8 @@ class MenuNode {
   final String id;
   final String? parentId;
   final String name;
+  /// Media-asset key of the uploaded tile image (null → draw the built-in icon).
+  final String? imageKey;
   final int sortOrder;
   final List<MenuNode> children;
   final List<String> itemIds;
@@ -220,7 +230,10 @@ class MenuLayout {
           .map((c) => attach(c, {...parents, c.id}))
           .toList()
         ..sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
-      return MenuNode(id: n.id, name: n.name, sortOrder: n.sortOrder, itemIds: n.itemIds, children: children);
+      return MenuNode(
+        id: n.id, name: n.name, sortOrder: n.sortOrder, itemIds: n.itemIds,
+        children: children, imageKey: n.imageKey,
+      );
     }
 
     final roots = nodes.where((n) => n.parentId == null || !byId.containsKey(n.parentId)).toList()
@@ -383,11 +396,68 @@ class ShipmentMaster {
   final bool active;
 }
 
+/// Outlet identity for print tokens (`{store_*}`) — the outlet master (detail
+/// toko = data tenant) shipped in the OUTLET domain by `web/lib/config/resync.ts`
+/// (`outlet` key). Empty defaults when the field is unset, never a guess.
+class OutletIdentity {
+  const OutletIdentity({
+    this.name = '',
+    this.shortcode = '',
+    this.address = '',
+    this.phone = '',
+    this.socialMedia = '',
+    this.instagram = '',
+    this.tiktok = '',
+    this.email = '',
+    this.timezone = '',
+    this.currencyLabel = '',
+  });
+
+  factory OutletIdentity.fromJson(Map<String, dynamic> j) => OutletIdentity(
+        name: j['name'] as String? ?? '',
+        shortcode: j['shortcode'] as String? ?? '',
+        address: j['address'] as String? ?? '',
+        phone: j['phone'] as String? ?? '',
+        socialMedia: j['socialMedia'] as String? ?? '',
+        instagram: j['instagram'] as String? ?? '',
+        tiktok: j['tiktok'] as String? ?? '',
+        email: j['email'] as String? ?? '',
+        timezone: j['timezone'] as String? ?? '',
+        currencyLabel: j['currencyLabel'] as String? ?? '',
+      );
+
+  final String name;
+  final String shortcode;
+  final String address;
+  final String phone;
+  final String socialMedia;
+  final String instagram;
+  final String tiktok;
+  final String email;
+  final String timezone;
+  final String currencyLabel;
+}
+
+/// Holding group identity for print tokens (`{group_name}`, `{group_shortcode}`).
+/// Shipped in the OUTLET domain (`group` key). Empty when absent.
+class GroupIdentity {
+  const GroupIdentity({this.name = '', this.shortcode = ''});
+
+  factory GroupIdentity.fromJson(Map<String, dynamic> j) => GroupIdentity(
+        name: j['name'] as String? ?? '',
+        shortcode: j['shortcode'] as String? ?? '',
+      );
+
+  final String name;
+  final String shortcode;
+}
+
 class ShiftConfig {
   ShiftConfig({
     required this.shiftType,
     required this.defaultHouseBank,
     required this.roundingMode,
+    this.endCountMode = EndCountMode.onlyCash,
     this.timezone,
     this.currencyLabel = '',
     this.mealShiftWindows = const [],
@@ -404,6 +474,7 @@ class ShiftConfig {
         shiftType: j['shiftType'] as String? ?? 'MANUAL',
         defaultHouseBank: double.tryParse((j['defaultHouseBank'] ?? '0').toString()) ?? 0,
         roundingMode: _roundingFrom(j['roundingMode'] as String?),
+        endCountMode: endCountModeFrom(j['endCountMode'] as String?),
         timezone: j['timezone'] as String?,
         currencyLabel: j['currencyLabel'] as String? ?? '',
         mealShiftWindows: (j['mealShiftWindows'] as List?)
@@ -418,6 +489,10 @@ class ShiftConfig {
   final String shiftType;
   final double defaultHouseBank;
   final money.RoundingMode roundingMode;
+
+  /// END SHIFT count mode for this outlet (server OUTLET config `shift.endCountMode`).
+  /// Unknown/absent → [EndCountMode.onlyCash] (safe fallback).
+  final EndCountMode endCountMode;
   final String? timezone;
   final String currencyLabel;
 
@@ -430,13 +505,77 @@ class ShiftConfig {
 
   bool get isAutomatic => shiftType.toUpperCase() == 'AUTOMATIC';
 
-  /// True when two configs describe the same shift RULES (type + windows).
-  /// Drives the "config change applies next day" rule: a running shift keeps
-  /// the config it started with.
+  /// True when two configs describe the same shift RULES (type + windows +
+  /// END SHIFT mode). Drives the "config change applies next day" rule: a
+  /// running shift keeps the config it started with.
   bool sameRules(ShiftConfig other) =>
       isAutomatic == other.isAutomatic &&
+      endCountMode == other.endCountMode &&
       mealShiftWindows.length == other.mealShiftWindows.length &&
       recapWindow?.label == other.recapWindow?.label;
+}
+
+/// END SHIFT count mode (mirrors server enum `EndCountMode`).
+enum EndCountMode {
+  onlyCash,
+  cashCashless,
+  crosscheckPerMethod;
+
+  /// Server code for the close payload.
+  String get code => switch (this) {
+        EndCountMode.onlyCash => 'ONLY_CASH',
+        EndCountMode.cashCashless => 'CASH_CASHLESS',
+        EndCountMode.crosscheckPerMethod => 'CROSSCHECK_PER_METHOD',
+      };
+}
+
+/// Parse the server code; anything unknown → [EndCountMode.onlyCash].
+EndCountMode endCountModeFrom(String? s) {
+  switch ((s ?? '').toUpperCase()) {
+    case 'CASH_CASHLESS':
+      return EndCountMode.cashCashless;
+    case 'CROSSCHECK_PER_METHOD':
+      return EndCountMode.crosscheckPerMethod;
+    default:
+      return EndCountMode.onlyCash;
+  }
+}
+
+/// One counted-cash input rendered by the END SHIFT dialog. Its [key] is the
+/// payload field it maps to: `countedTotal`, `cash`, `cashless`, or an outlet
+/// method id (crosscheck).
+class EndCountField {
+  const EndCountField({required this.key, required this.label, this.type, this.outletMethodId});
+
+  final String key;
+  final String label;
+  final String? type; // CASH | NON_CASH
+  final String? outletMethodId;
+}
+
+/// The count inputs the POS must render for a mode:
+/// 1 field (ONLY_CASH), 2 fields (CASH_CASHLESS), or one per ACTIVE outlet
+/// method (CROSSCHECK_PER_METHOD). Pure → unit-testable.
+List<EndCountField> endCountFields(EndCountMode mode, List<OutletPaymentMethod> methods) {
+  switch (mode) {
+    case EndCountMode.cashCashless:
+      return const [
+        EndCountField(key: 'cash', label: 'Cash', type: 'CASH'),
+        EndCountField(key: 'cashless', label: 'Cashless', type: 'NON_CASH'),
+      ];
+    case EndCountMode.crosscheckPerMethod:
+      return [
+        for (final m in methods)
+          EndCountField(
+            key: m.id,
+            label: m.displayName,
+            type: m.type == money.PayType.cash ? 'CASH' : 'NON_CASH',
+            outletMethodId: m.id,
+          ),
+      ];
+    case EndCountMode.onlyCash:
+      return const [EndCountField(key: 'countedTotal', label: 'Counted cash (total)', type: 'CASH')];
+  }
 }
 
 class TableInfo {
@@ -468,6 +607,8 @@ class TenantConfig {
     this.discounts = const [],
     this.vouchers = const [],
     this.shipmentMasters = const [],
+    this.outlet = const OutletIdentity(),
+    this.group = const GroupIdentity(),
   });
 
   factory TenantConfig.fromSyncPayloads(Map<String, dynamic> master, Map<String, dynamic> outlet) {
@@ -527,6 +668,14 @@ class TenantConfig {
       discounts: discounts,
       vouchers: vouchers,
       shipmentMasters: shipments,
+      // Outlet + group identity for print tokens (additive OUTLET keys; absent
+      // on older payloads → empty, never a guess).
+      outlet: outlet['outlet'] is Map<String, dynamic>
+          ? OutletIdentity.fromJson(outlet['outlet'] as Map<String, dynamic>)
+          : const OutletIdentity(),
+      group: outlet['group'] is Map<String, dynamic>
+          ? GroupIdentity.fromJson(outlet['group'] as Map<String, dynamic>)
+          : const GroupIdentity(),
     );
   }
 
@@ -548,6 +697,13 @@ class TenantConfig {
   /// Tenant shipment masters (precise amount). NOT shipped by resync.ts today →
   /// empty on a real device; the master-shipment option stays unavailable.
   final List<ShipmentMaster> shipmentMasters;
+
+  /// Outlet identity (name/shortcode/address/phone/social/tz/currency) for the
+  /// `{store_*}` print tokens. Empty when the OUTLET payload omits it.
+  final OutletIdentity outlet;
+
+  /// Holding group identity for `{group_name}` / `{group_shortcode}`.
+  final GroupIdentity group;
 
   /// Flat category-id → parent-id map (walks the nested `children` tree the
   /// server sends). Used for discount/voucher category eligibility inheritance.
@@ -595,7 +751,13 @@ class TenantConfig {
       }).toSet().toList();
       final children = _pruneItems(n.children, filterActive);
       if (visible.isNotEmpty || children.isNotEmpty) {
-        out.add(MenuNode(id: n.id, parentId: n.parentId, name: n.name, sortOrder: n.sortOrder, itemIds: visible, children: children));
+        out.add(MenuNode(
+          id: n.id, parentId: n.parentId, name: n.name, sortOrder: n.sortOrder,
+          itemIds: visible, children: children,
+          // The tile image must survive the prune, or the order screen could
+          // never show an uploaded category picture.
+          imageKey: n.imageKey,
+        ));
       }
     }
     return out;
@@ -608,23 +770,29 @@ class TenantConfig {
       byCat.putIfAbsent(i.categoryId, () => []).add(i);
     }
     final idToName = {for (final c in categories) c.id: c.name};
+    final idToImage = {for (final c in categories) c.id: c.imageKey};
     return byCat.entries.map((e) {
       return MenuNode(
         id: 'cat:_${e.key}',
         name: idToName[e.key] ?? 'Items',
         itemIds: e.value.map((i) => i.id).toList(),
+        imageKey: idToImage[e.key],
       );
     }).toList();
   }
 }
 
 class Category {
-  Category({required this.id, this.parentId, required this.name, this.children = const []});
+  Category({required this.id, this.parentId, required this.name, this.children = const [], this.imageKey});
+
+  /// Uploaded tile image (media asset key) — used by the category fallback view.
+  final String? imageKey;
 
   factory Category.fromJson(Map<String, dynamic> j) => Category(
         id: j['id'] as String,
         parentId: j['parentId'] as String?,
         name: j['name'] as String,
+        imageKey: (j['imageKey'] as String?)?.trim().isEmpty ?? true ? null : j['imageKey'] as String?,
         children: (j['children'] as List?)
                 ?.map((e) => Category.fromJson(e as Map<String, dynamic>))
                 .toList() ??
