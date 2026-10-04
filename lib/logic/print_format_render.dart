@@ -486,11 +486,24 @@ void _emitItems(PrintBlock b, _Ctx ctx, _Out out, int cells) {
         }
         break;
     }
-    // Grouped mode: nest the modifiers under their own item (a flat
-    // MODIFIER_LIST at the ticket end detaches them from the item).
-    if (b.groupByMenu && b.withModifiers && b.columns != ItemColumns.full) {
+    // Modifiers sit under their OWN item line — in the flat list too, not only
+    // the grouped kitchen ticket (a flat MODIFIER_LIST at the ticket end detaches
+    // them from the dish). Price shows only when asked for; on an internal ticket
+    // it never shows (name only).
+    if (b.withModifiers && b.columns != ItemColumns.full) {
       for (final m in _rows(it['modifiers'])) {
-        rows.add(_fit('  + ${_stringify(m['name'])}', cells, BlockAlign.left));
+        final label = '  + ${_stringify(m['name'])}';
+        final mp = _asNum(m['price']) ?? 0;
+        if (!ctx.internal && b.withPrice && money.round2(mp) != 0) {
+          // Size the money column from the rendered text (an "IDR. 8.000,00"
+          // label is 13 cells — a fixed 12 would clip the last digit).
+          final mny = _moneyLabel(mp, ctx.currency);
+          final priceW = mny.length + 2 < 14 ? 14 : mny.length + 2;
+          rows.add(_fit(label, (cells - priceW).clamp(1, cells), BlockAlign.left) +
+              _fit(mny, priceW, BlockAlign.right));
+        } else {
+          rows.add(_fit(label, cells, BlockAlign.left));
+        }
       }
     }
   }
@@ -566,8 +579,10 @@ void _emitModifiers(PrintBlock b, _Ctx ctx, _Out out, int cells) {
       // A free modifier prints NAME ONLY: its price is already inside the
       // parent item's line price, so a "0.00" column is just noise.
       if (withPrice && money.round2(price) != 0) {
-        final w = (cells - 12).clamp(1, cells);
-        rows.add(_fit(label, w, BlockAlign.left) + _fit(_moneyLabel(price, ctx.currency), 12, BlockAlign.right));
+        final mny = _moneyLabel(price, ctx.currency);
+        final priceW = mny.length + 2 < 14 ? 14 : mny.length + 2;
+        final w = (cells - priceW).clamp(1, cells);
+        rows.add(_fit(label, w, BlockAlign.left) + _fit(mny, priceW, BlockAlign.right));
       } else {
         rows.add(_fit(label, cells, BlockAlign.left));
       }

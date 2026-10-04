@@ -375,7 +375,7 @@ class FakeBackend {
               'groupId': 'g1',
               'tenantId': 't1',
               'outlet': {'id': 't1', 'name': 'Northstar'},
-              'user': {'id': 'u1', 'email': 'c@x.demo', 'fullName': 'Cashier One'},
+              'user': {'id': 'u1', 'email': 'c@x.demo', 'fullName': 'Cashier One', 'role': 'Cashier'},
               'license': _license,
             });
       case '/api/auth/logout':

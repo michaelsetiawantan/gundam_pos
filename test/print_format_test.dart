@@ -271,6 +271,40 @@ void main() {
     });
   });
 
+  group('ITEM_LIST.withModifiers — nests under the OWN item, flat list too', () {
+    Map<String, dynamic> payload() => {
+          'tokens': {'currency_label': 'Rp'},
+          'items': [
+            {
+              'name': 'Latte',
+              'qty': 1,
+              'price': 30000.0,
+              'lineTotal': 38000.0,
+              'modifiers': [{'name': 'Oat', 'price': 8000.0}],
+            },
+            {'name': 'Americano', 'qty': 2, 'price': 25000.0, 'lineTotal': 50000.0},
+          ],
+        };
+
+    test('flat list: the modifier sits directly under its own item', () {
+      final r = render([
+        {'id': 'i', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE', 'withModifiers': true},
+      ], payload());
+      final latte = r.lines.indexWhere((l) => l.contains('Latte'));
+      final amer = r.lines.indexWhere((l) => l.contains('Americano'));
+      expect(r.lines[latte + 1].trim(), '+ Oat'); // attached, not at the bottom
+      expect(amer, greaterThan(latte + 1));
+    });
+
+    test('withPrice shows a priced modifier amount', () {
+      final r = render([
+        {'id': 'i', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE', 'withModifiers': true, 'withPrice': true},
+      ], payload());
+      final oat = r.lines.firstWhere((l) => l.contains('Oat'));
+      expect(oat, contains('8.000,00'));
+    });
+  });
+
   group('TABLE block (CONTRACT §2)', () {
     test('header + one data row per item, respecting widths/align', () {
       final r = render([

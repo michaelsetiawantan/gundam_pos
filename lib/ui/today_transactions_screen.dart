@@ -66,7 +66,27 @@ class _TodayTransactionsScreenState extends State<TodayTransactionsScreen> with 
     });
   }
 
-  bool get _hasBills => _rows.isNotEmpty;
+  Widget _filterBar() {
+    const options = [('ALL', 'All'), ('PAID', 'Paid'), ('CANCELED', 'Canceled'), ('VOIDED', 'Voided')];
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 10),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(children: [
+          for (final (value, label) in options)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: FilterChip(
+                key: Key('today-filter-$value'),
+                label: Text(label),
+                selected: _filter == value,
+                onSelected: (_) => setState(() => _filter = value),
+              ),
+            ),
+        ]),
+      ),
+    );
+  }
 
   /// Server rows when reachable; otherwise the local same-day settles, shaped
   /// into the same row keys so the list renders identically. When the server IS
@@ -110,6 +130,20 @@ class _TodayTransactionsScreenState extends State<TodayTransactionsScreen> with 
   }
 
   bool _isFailed(Map<String, dynamic> r) => r['status']?.toString() == 'FAILED';
+
+  /// Dashboard filter: All / Paid / Canceled / Voided. Paid includes the
+  /// offline variant; a refunded/failed row stays visible under All only.
+  String _filter = 'ALL';
+
+  bool _matchesFilter(Map<String, dynamic> r) {
+    final s = r['status']?.toString() ?? 'PAID';
+    return switch (_filter) {
+      'PAID' => _isPaid(r),
+      'CANCELED' => s == 'CANCELED',
+      'VOIDED' => s == 'VOIDED',
+      _ => true,
+    };
+  }
 
   /// Cancelled / voided / refunded rows are tappable: they open the trace popup
   /// (when / who asked / who authorised / why).
@@ -282,9 +316,10 @@ class _TodayTransactionsScreenState extends State<TodayTransactionsScreen> with 
           listenable: _session,
           builder: (_, __) {
             if (_loading) return const Center(child: CircularProgressIndicator());
-            final rows = _rows;
+            final all = _rows;
+            final rows = all.where(_matchesFilter).toList();
             return Column(children: [
-              _summary(rows),
+              _summary(all),
               if (_offlineNote != null)
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
@@ -294,18 +329,23 @@ class _TodayTransactionsScreenState extends State<TodayTransactionsScreen> with 
                     Expanded(child: Text(_offlineNote!, style: const TextStyle(color: PosTheme.slate, fontSize: 13))),
                   ]),
                 ),
+              _filterBar(),
               const Divider(height: 1),
               Expanded(
-                child: !_hasBills
+                child: all.isEmpty
                     ? const Center(
                         child: Text('No transactions today yet.', style: TextStyle(color: PosTheme.slate, fontSize: 16)),
                       )
-                    : ListView.separated(
-                        padding: const EdgeInsets.all(20),
-                        itemCount: rows.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 12),
-                        itemBuilder: (_, i) => _card(context, rows[i]),
-                      ),
+                    : rows.isEmpty
+                        ? const Center(
+                            child: Text('No transactions match this filter.', style: TextStyle(color: PosTheme.slate, fontSize: 16)),
+                          )
+                        : ListView.separated(
+                            padding: const EdgeInsets.all(20),
+                            itemCount: rows.length,
+                            separatorBuilder: (_, __) => const SizedBox(height: 12),
+                            itemBuilder: (_, i) => _card(context, rows[i]),
+                          ),
               ),
             ]);
           },

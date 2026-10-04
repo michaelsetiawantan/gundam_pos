@@ -173,6 +173,45 @@ void main() {
     expect(todayCalls, 2); // the list reloaded itself — no manual refresh
   });
 
+  testWidgets('filter chips narrow the list to all / paid / canceled / voided', (tester) async {
+    final session = await _readySession(_todayBackend([
+      _row(orderId: 'o-paid', status: 'PAID', receiptId: 'R-PAID', total: 45000),
+      _row(orderId: 'o-cancel', status: 'CANCELED', receiptId: 'R-CAN', total: 30000),
+      _row(orderId: 'o-void', status: 'VOIDED', receiptId: 'R-VOID', total: 20000),
+    ]));
+
+    await tester.pumpWidget(_wrap(TodayTransactionsScreen(session: session)));
+    await tester.pumpAndSettle();
+
+    // Default = All: every status is shown.
+    expect(find.text('R-PAID'), findsOneWidget);
+    expect(find.text('R-CAN'), findsOneWidget);
+    expect(find.text('R-VOID'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('today-filter-PAID')));
+    await tester.pumpAndSettle();
+    expect(find.text('R-PAID'), findsOneWidget);
+    expect(find.text('R-CAN'), findsNothing);
+    expect(find.text('R-VOID'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('today-filter-CANCELED')));
+    await tester.pumpAndSettle();
+    expect(find.text('R-PAID'), findsNothing);
+    expect(find.text('R-CAN'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('today-filter-VOIDED')));
+    await tester.pumpAndSettle();
+    expect(find.text('R-PAID'), findsNothing);
+    expect(find.text('R-CAN'), findsNothing);
+    expect(find.text('R-VOID'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('today-filter-ALL')));
+    await tester.pumpAndSettle();
+    expect(find.text('R-PAID'), findsOneWidget);
+    expect(find.text('R-CAN'), findsOneWidget);
+    expect(find.text('R-VOID'), findsOneWidget);
+  });
+
   testWidgets('offline falls back to the local settled bills', (tester) async {
     final session = await _readySession(_todayBackend(const [], offline: true));
     session.noteSettled({'orderId': 'o-local', 'receiptId': 'LOCAL-0001', 'total': 12000});

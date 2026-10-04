@@ -129,6 +129,12 @@ void main() {
   testWidgets('open tables → new order → order entry adds item', (tester) async {
     final backend = FakeBackend();
     final session = await _readySession(backend);
+    // Opening an order needs an OPEN shift (PRD gate).
+    backend.activeShiftBody = {
+      'id': 'shift-1', 'tenantId': 't1', 'userId': 'u1', 'shiftType': 'MANUAL',
+      'startAt': DateTime.now().toIso8601String(), 'openHousebank': 500000, 'status': 'OPEN',
+    };
+    await session.shiftController.restore();
     final config = _northstar();
     await tester.pumpWidget(_wrap(OpenTablesScreen(session: session, config: config)));
     await tester.pumpAndSettle();

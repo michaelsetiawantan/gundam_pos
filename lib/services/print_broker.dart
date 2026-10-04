@@ -325,8 +325,9 @@ PrintFormat builtinFormat(String ticketType, {int widthMm = 80}) {
         {'id': 'b', 'type': 'SEPARATOR'},
         {'id': 'c', 'type': 'TEXT', 'text': 'Table {table_name}   {batch_label}'},
         {'id': 'd', 'type': 'SEPARATOR'},
-        {'id': 'e', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY', 'wrap': true},
-        {'id': 'f', 'type': 'MODIFIER_LIST', 'indent': 2},
+        // withModifiers nests each item's modifiers directly under it; the old
+        // separate MODIFIER_LIST detached them to the bottom of the label.
+        {'id': 'e', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY', 'wrap': true, 'groupByMenu': true, 'withModifiers': true},
         {'id': 'g', 'type': 'FEED', 'lines': 2},
       ]);
     case 'SHIFT_OPEN':
@@ -356,8 +357,10 @@ PrintFormat builtinFormat(String ticketType, {int widthMm = 80}) {
         {'id': 'e', 'type': 'VAR', 'param': '{paid_at}'},
         {'id': 'f', 'type': 'VAR', 'param': '{table_name}'},
         {'id': 'g', 'type': 'SEPARATOR'},
-        {'id': 'h', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE', 'nameMax': 20},
-        {'id': 'i', 'type': 'MODIFIER_LIST', 'indent': 2, 'withPrice': true},
+        // ONE item list that carries each item's modifiers under its own line
+        // (a separate MODIFIER_LIST printed every product first, then every
+        // modifier at the bottom — detached from the dish).
+        {'id': 'h', 'type': 'ITEM_LIST', 'columns': 'NAME_QTY_PRICE', 'nameMax': 20, 'withModifiers': true, 'withPrice': true},
         {'id': 'j', 'type': 'SEPARATOR'},
         {
           'id': 'k',

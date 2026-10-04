@@ -37,6 +37,7 @@ class CartLine {
     this.pending = false, // local-only: queued to the outbox, not yet confirmed
     this.failed = false, // local-only: server rejected this add
     this.localKey, // stable local identity for the outbox (entityId)
+    this.syncedQty = 0, // qty already confirmed on the server for this line
   });
 
   /// Server line id (`OrderLine.id`). The server is authoritative for lines, so
@@ -68,6 +69,11 @@ class CartLine {
   /// queued push can be matched back to this line. Null for lines that never
   /// went through the offline path (server-adopted at load time).
   final String? localKey;
+
+  /// Qty already confirmed by the server for this line. `qty - syncedQty` is the
+  /// unconfirmed delta to push (the server SUMS by client line key, so a re-add
+  /// of an adopted line must carry only the delta, never the running total).
+  int syncedQty;
 
   /// Modifier-inclusive unit price (server: lineUnitPrice = base + Σ mods).
   double get unitPriceWithMods => money.round2(unitPrice + modifiers.fold<double>(0, (s, m) => s + m.subtotal));

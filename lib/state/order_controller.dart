@@ -277,10 +277,19 @@ class OrderController extends ChangeNotifier {
       twin.pending = true;
       error = null;
       notifyListeners();
-      // ONE queued row per line: re-enqueue under the SAME key with the new
-      // TOTAL qty, so the server gets a single line instead of two.
+      // ONE queued row per line, keyed by the SAME client line key so the
+      // server merges instead of stacking.
+      //  - Line not yet on the server (offline create): the single queued add
+      //    must carry the TOTAL qty (it will CREATE the line).
+      //  - Line already on the server: the new pick is a DELTA since the last
+      //    confirmed qty (the server SUMS by client line key). Tracked
+      //    cumulatively so an offline streak never loses units — enqueue
+      //    upserts the row, it never appends.
+      final adopted = twin.lineId != null;
+      final sendQty = adopted ? (twin.qty - twin.syncedQty) : twin.qty;
       await store.enqueue('order_line', twin.localKey!,
-          _linePayload(id, item.id, levelIndex, twin.qty, mods, clientLineKey: twin.localKey));
+          _linePayload(id, item.id, levelIndex, sendQty < 1 ? qty : sendQty, mods,
+              clientLineKey: twin.localKey, mergeDelta: adopted));
       await flushPendingLines();
       return twin;
     }
@@ -330,6 +339,7 @@ class OrderController extends ChangeNotifier {
         // operator still sees WHICH modifiers were picked.
         modifiers: _displayMods(line['mods']),
         sent: (line['sentToKitchen'] as bool?) ?? false,
+        syncedQty: _intOf(line['qty'], qty),
       );
       // 1:1 with the server line — NEVER merge, or a later delete targets the
       // wrong OrderLine (the field bug: a deleted item came back on reload).
@@ -389,9 +399,12 @@ class OrderController extends ChangeNotifier {
   /// The durable outbox payload for one line (carries `orderId` so a session-wide
   /// flush can POST it without the order controller).
   Map<String, dynamic> _linePayload(String orderId, String itemId, int levelIndex, int qty,
-          List<CartModifier> mods, {String? clientLineKey}) =>
+          List<CartModifier> mods, {String? clientLineKey, bool mergeDelta = false}) =>
       {
         'orderId': orderId,
+        // Marks a DELTA add onto a line the server already holds (its qty is
+        // summed) so the flush never confuses it with a stale adopted entry.
+        if (mergeDelta) 'mergeDelta': true,
         ..._lineBody(itemId, levelIndex, qty, mods, clientLineKey: clientLineKey),
       };
 
@@ -413,6 +426,9 @@ class OrderController extends ChangeNotifier {
     local.sent = (server['sentToKitchen'] as bool?) ?? local.sent;
     local.pending = false;
     local.failed = false;
+    // The server now holds this line's full local qty — the next re-add pushes
+    // only the delta beyond this watermark.
+    local.syncedQty = local.qty;
   }
 
   /// Modifier names for DISPLAY: price forced to 0 because [CartLine.unitPrice]
@@ -461,8 +477,10 @@ class OrderController extends ChangeNotifier {
           await store.remove('order_line', key);
           continue;
         }
-        if (local.lineId != null) {
-          // Already adopted — never POST twice.
+        if (local.lineId != null && !(payload is Map && payload['mergeDelta'] == true)) {
+          // Already adopted with no pending change — drop the stale entry. A
+          // mergeDelta entry is a NEW pick on an adopted line and must be sent
+          // (the server sums it by client line key).
           await store.remove('order_line', key);
           continue;
         }
@@ -475,6 +493,10 @@ class OrderController extends ChangeNotifier {
         try {
           final r = await posApi.addLine(orderId, body: {
             'itemId': p['itemId'],
+            // The tablet's key MUST ride every add so the server merges by key
+            // instead of stacking a duplicate (a replayed/merged add included).
+            if ((p['clientLineKey'] as String?)?.isNotEmpty ?? false)
+              'clientLineKey': p['clientLineKey'],
             'priceLevelIndex': p['priceLevelIndex'] ?? local.priceLevelIndex,
             'qty': p['qty'] ?? local.qty,
             'mods': p['mods'] ?? const [],
@@ -552,7 +574,7 @@ class OrderController extends ChangeNotifier {
       if (l.lineId == null && l.localKey != null && l.failed) {
         l.failed = false;
         l.pending = true;
-        await store.enqueue('order_line', l.localKey!, _linePayload(id, l.itemId, l.priceLevelIndex, l.qty, l.modifiers));
+        await store.enqueue('order_line', l.localKey!, _linePayload(id, l.itemId, l.priceLevelIndex, l.qty, l.modifiers, clientLineKey: l.localKey));
       }
     }
     await flushPendingLines();
@@ -710,6 +732,7 @@ class OrderController extends ChangeNotifier {
           scMode: _modeFrom(l['scMode'] as String?),
           modifiers: _displayMods(l['mods']),
           sent: (l['sentToKitchen'] as bool?) ?? false,
+          syncedQty: _intOf(l['qty'], 1),
         ),
         merge: false,
       );

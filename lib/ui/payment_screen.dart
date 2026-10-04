@@ -116,17 +116,17 @@ class _PaymentScreenState extends State<PaymentScreen> {
               Wrap(spacing: 10, runSpacing: 10, children: [
                 for (final m in c.config.paymentMethods)
                   SizedBox(
-                    width: 150,
+                    width: 180,
                     child: OutlinedButton(
                       onPressed: () => _add(m),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 18),
+                        padding: const EdgeInsets.symmetric(vertical: 24),
                         side: BorderSide(color: m.type == money.PayType.cash ? PosTheme.petrol : PosTheme.teal, width: 1.5),
                       ),
                       child: Column(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(m.type == money.PayType.cash ? Icons.payments : Icons.credit_card, color: PosTheme.petrol),
-                        const SizedBox(height: 6),
-                        Text(m.displayName, style: const TextStyle(fontSize: 14)),
+                        Icon(m.type == money.PayType.cash ? Icons.payments : Icons.credit_card, color: PosTheme.petrol, size: 34),
+                        const SizedBox(height: 8),
+                        Text(m.displayName, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
                       ]),
                     ),
                   ),

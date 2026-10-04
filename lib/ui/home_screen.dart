@@ -155,7 +155,7 @@ class _ContextCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = ctx.userName ?? 'Cashier';
     final shortcode = ctx.shortcode ?? '-';
-    final outlet = ctx.outletName ?? '';
+    final role = ctx.roleName ?? '—';
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -169,7 +169,7 @@ class _ContextCard extends StatelessWidget {
           Expanded(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(name, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700)),
-              Text(outlet, style: const TextStyle(color: PosTheme.tealSoft, fontSize: 12)),
+              Text(role, key: const Key('user-role'), style: const TextStyle(color: PosTheme.tealSoft, fontSize: 12, fontWeight: FontWeight.w600)),
             ]),
           ),
         ]),

@@ -54,10 +54,14 @@ void main() {
     expect(session.isReady, isTrue);
     expect(session.context.outletName, 'Northstar');
     expect(session.context.userName, 'Cashier One');
+    expect(session.context.roleName, 'Cashier');
 
     await tester.pumpWidget(_wrap(HomeScreen(session: session)));
-    expect(find.text('Northstar'), findsWidgets); // app bar + context card
+    expect(find.text('Northstar'), findsWidgets); // app bar
     expect(find.text('Cashier One'), findsOneWidget);
+    // The card under the user name shows the ROLE, not the outlet name.
+    expect(find.text('Cashier'), findsOneWidget);
+    expect(find.byKey(const Key('user-role')), findsOneWidget);
     expect(find.text('Open Tables'), findsOneWidget);
   });
 

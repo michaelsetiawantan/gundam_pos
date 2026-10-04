@@ -292,6 +292,21 @@ void main() {
     }
     expect((payload['payments'] as List), isEmpty);
   });
+
+  test('built-in BILL nests each modifier under its own item (no detached MODIFIER_LIST)', () {
+    final fmt = builtinFormat('BILL', widthMm: 80);
+    expect(fmt.blocks.any((b) => b.type == BlockType.modifierList), isFalse,
+        reason: 'a standalone MODIFIER_LIST prints every product first, then every '
+            'modifier at the bottom — detached from the dish');
+    final item = fmt.blocks.firstWhere((b) => b.type == BlockType.itemList);
+    expect(item.withModifiers, isTrue);
+    final payload = builder.bill(
+      ctx: _ctx(), items: _items(), receiptId: 'NSC-1', flow: flow, split: split, settled: true);
+    final out = renderPrintFormat(format: fmt, ticketPayload: payload).lines;
+    final white = out.indexWhere((l) => l.contains('Flat White'));
+    expect(out[white + 1].trim(), startsWith('+ Oat'));
+    expect(out[white + 1].trim(), endsWith('IDR. 8.000,00')); // attached + not clipped
+  });
 }
 
 class _NullTransport implements PrintTransport {

@@ -92,6 +92,12 @@ void main() {
   testWidgets('open tables: tapping a hanging order continues it in order entry', (tester) async {
     final backend = FakeBackend()..openOrders = [_hangingOrder()];
     final session = await _readySession(backend);
+    // Entering an active table needs an OPEN shift (PRD gate).
+    backend.activeShiftBody = {
+      'id': 'shift-1', 'tenantId': 't1', 'userId': 'u1', 'shiftType': 'MANUAL',
+      'startAt': DateTime.now().toIso8601String(), 'openHousebank': 500000, 'status': 'OPEN',
+    };
+    await session.shiftController.restore();
     final config = _northstar();
 
     await tester.pumpWidget(_wrap(OpenTablesScreen(session: session, config: config)));

@@ -6,6 +6,7 @@ import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/order_controller.dart';
 import 'package:gundam_pos/ui/new_order_screen.dart';
 import 'package:gundam_pos/ui/order_entry_screen.dart';
+import 'package:gundam_pos/ui/shift_gate.dart';
 import 'package:gundam_pos/ui/table_ops_sheet.dart';
 import 'package:gundam_pos/ui/theme.dart';
 
@@ -145,7 +146,11 @@ class _OpenTablesScreenState extends State<OpenTablesScreen> with WidgetsBinding
         'localOnly': true,
       };
 
-  void _newOrder() {
+  Future<void> _newOrder() async {
+    // PRD: no table may be opened without an OPEN shift. Block early with a
+    // clear message + a direct Start Shift path (read-only browsing stays free).
+    if (!await ensureShiftOpen(context, widget.session, widget.config)) return;
+    if (!mounted) return;
     Navigator.of(context).push(MaterialPageRoute(builder: (_) => NewOrderScreen(session: widget.session, config: widget.config))).then((_) => _load());
   }
 
@@ -165,6 +170,10 @@ class _OpenTablesScreenState extends State<OpenTablesScreen> with WidgetsBinding
   /// Open a hanging order for continuation: adopt it into a fresh controller
   /// (same bill id + existing lines) and enter order entry. Back → reload.
   Future<void> _resume(Map<String, dynamic> o) async {
+    // Entering an active table is a transaction operation (add lines / settle)
+    // → it needs an OPEN shift, exactly like a new order.
+    if (!await ensureShiftOpen(context, widget.session, widget.config)) return;
+    if (!mounted) return;
     final c = OrderController(
       posApi: widget.session.posApi,
       tenantId: widget.session.tenantId!,

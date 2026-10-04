@@ -4,6 +4,26 @@ Format: [Keep a Changelog](https://keepachangelog.com/) · versi semver, version
 Changelog ini yang dikirim ke server saat publish release (kolom `changelog` di `PosRelease`) dan
 yang ditampilkan ke tablet sebagai "what's new".
 
+## [0.12.0] — 2026-10-04
+
+### Fixed
+- **Cart qty no longer reverts.** Adding the same product again never asks for a sync and never drops back to
+  the first qty: the queued add now carries the tablet's `clientLineKey` and only the DELTA for a line the
+  server already knows, so the server merges by key and sums the qty. Send-cart therefore sends the real qty.
+- **Bill modifiers sit under their own line.** A flat `MODIFIER_LIST` at the end of the ticket (web format
+  builder) detached every modifier from its dish — modifiers now print per item line, in the flat list too,
+  qty following the real order. Money columns are sized from the rendered text so a 13-cell label is never
+  clipped.
+- **No order work without an open shift.** New Order, entering an active table and starting an order are
+  blocked with a clear "Start a shift first" dialog (button straight to Shift). The server rejects a line add
+  with `409 shift_required` too. Read-only screens and the offline settle queue stay open.
+
+### Changed
+- Payment method buttons are larger (180 wide, 34 icon, 17 text).
+- Today's orders gained a filter: All / Paid / Canceled / Voided.
+- The dashboard shows the signed-in user's ROLE under the name instead of repeating the outlet.
+- Dashboard menu icons are bigger (glyph 22 -> 30, title 16 -> 17) inside the same tile, still overflow-free.
+
 ## [0.11.0] — 2026-10-04
 
 POS jalan tanpa internet: penjualan, kirim dapur, antrean push, + pembuka laci kasir.

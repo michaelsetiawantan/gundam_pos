@@ -5,6 +5,7 @@ import 'package:gundam_pos/models/config_models.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/order_controller.dart';
 import 'package:gundam_pos/ui/order_entry_screen.dart';
+import 'package:gundam_pos/ui/shift_gate.dart';
 import 'package:gundam_pos/ui/theme.dart';
 import 'package:gundam_pos/ui/widgets.dart';
 
@@ -39,6 +40,10 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
   bool get _hasTable => _freeText ? _tableText.text.trim().isNotEmpty : _tableId != null;
 
   Future<void> _start() async {
+    // Defensive: never start an order without an OPEN shift (entry point is
+    // gated too, but a direct build must not be able to slip past).
+    if (!await ensureShiftOpen(context, widget.session, widget.config)) return;
+    if (!mounted) return;
     final name = _freeText ? _tableText.text.trim() : null;
     final id = _freeText ? null : _tableId;
     final pax = int.tryParse(_pax.text.trim()) ?? 1;

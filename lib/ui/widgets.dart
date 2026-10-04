@@ -236,13 +236,13 @@ class HomeTile extends StatelessWidget {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(color: PosTheme.tealSoft, borderRadius: BorderRadius.circular(10)),
-                    child: Icon(icon, color: PosTheme.petrol, size: 22),
+                    child: Icon(icon, color: PosTheme.petrol, size: 30),
                   ),
                   const SizedBox(height: 8),
                   Text(title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: PosTheme.ink)),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700, color: PosTheme.ink)),
                   const SizedBox(height: 2),
                   // Ellipsised: a long label must never overflow the fixed tile again
                   // (it did once an extra Home tile made the grid taller/narrower).

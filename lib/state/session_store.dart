@@ -16,6 +16,7 @@ class PosContext {
     this.userId,
     this.userEmail,
     this.userName,
+    this.roleName,
     this.outletId,
     this.outletName,
     this.deviceId,
@@ -30,6 +31,11 @@ class PosContext {
   final String? userId;
   final String? userEmail;
   final String? userName;
+
+  /// The user's ROLE name as sent by the server (`user.role.name`). Shown on the
+  /// dashboard under the user name. Null when the account has no named role
+  /// (owner / super-admin carry flags, not a role row).
+  final String? roleName;
   final String? outletId;
   final String? outletName;
   final String? deviceId;
@@ -50,6 +56,7 @@ class PosContext {
         userId: _nest(r['user'], 'id') ?? userId,
         userEmail: _nest(r['user'], 'email') ?? userEmail,
         userName: _nest(r['user'], 'fullName') ?? userName,
+        roleName: _nest(r['user'], 'role') ?? roleName,
         outletId: _nest(r['outlet'], 'id') ?? tenantId,
         outletName: _nest(r['outlet'], 'name') ?? outletName,
         // The server may issue the session cookie in a later body field.
@@ -66,6 +73,7 @@ class PosContext {
         userId: userId,
         userEmail: userEmail,
         userName: userName,
+        roleName: roleName,
         outletId: outletId,
         outletName: outletName,
         sessionCookie: sessionCookie,
@@ -81,6 +89,7 @@ class PosContext {
         userId: userId,
         userEmail: userEmail,
         userName: userName,
+        roleName: roleName,
         outletId: outletId,
         outletName: outletName,
         sessionCookie: sessionCookie,
@@ -106,6 +115,7 @@ const _kSession = 'gundam_session_id';
 const _kUser = 'gundam_user_id';
 const _kEmail = 'gundam_user_email';
 const _kName = 'gundam_user_name';
+const _kRole = 'gundam_user_role';
 const _kOutletName = 'gundam_outlet_name';
 const _kDeviceId = 'gundam_device_id';
 const _kSessionCookie = 'gundam_session_cookie';
@@ -128,6 +138,7 @@ class SecureSessionStore implements SessionStore {
       userId: all[_kUser],
       userEmail: all[_kEmail],
       userName: all[_kName],
+      roleName: all[_kRole],
       outletName: all[_kOutletName],
       deviceId: all[_kDeviceId],
       sessionCookie: all[_kSessionCookie],
@@ -145,6 +156,7 @@ class SecureSessionStore implements SessionStore {
       if (ctx.userId != null) _kUser: ctx.userId!,
       if (ctx.userEmail != null) _kEmail: ctx.userEmail!,
       if (ctx.userName != null) _kName: ctx.userName!,
+      if (ctx.roleName != null) _kRole: ctx.roleName!,
       if (ctx.outletName != null) _kOutletName: ctx.outletName!,
       if (ctx.deviceId != null) _kDeviceId: ctx.deviceId!,
       if (ctx.sessionCookie != null) _kSessionCookie: ctx.sessionCookie!,
