@@ -57,6 +57,7 @@ class AppSession extends ChangeNotifier {
     PrinterHealthReporter? printerHealthReporter,
     PrintLogStore? printLogStore,
     DiagnosticLog? diagLog,
+    DiagnosticLogStore? diagStore,
   })  : _posApi = posApi,
         _store = sessionStore,
         _addrStore = serverAddressStore ?? InMemoryServerAddressStore(),
@@ -66,8 +67,11 @@ class AppSession extends ChangeNotifier {
         _now = now ?? DateTime.now,
         _printTransport = printTransport ?? _defaultPrintTransport(),
         _healthReporter = printerHealthReporter,
+        _diagStore = diagStore ?? MemoryDiagnosticLogStore(),
         diagnostics = diagLog ?? diagnosticLog,
         printLogs = printLogStore ?? MemoryPrintLogStore(now: now) {
+    // Persist warn/error lines so a crash/restart does not erase the trail.
+    diagnostics.persist = _diagStore;
     // Record EVERY failed request into the diagnostic log — the operator sees a
     // message once, but the bundle carries the trail to the server.
     _posApi.onApiError = _recordApiError;
@@ -360,6 +364,7 @@ class AppSession extends ChangeNotifier {
       }
     } catch (_) {
       // Best-effort: a flush failure never breaks a sync.
+      diagnostics.warn('order-queue', 'order outbox flush failed — queue left intact');
     }
     notifyListeners();
     return sent;
@@ -405,6 +410,7 @@ class AppSession extends ChangeNotifier {
       printLogPending = await printLogs.pendingUploadCount();
     } catch (_) {
       printLogPending = 0;
+      diagnostics.warn('print-log', 'pending print-log count unavailable');
     }
     notifyListeners();
     return printLogPending;
@@ -429,6 +435,7 @@ class AppSession extends ChangeNotifier {
       await printLogs.pruneUploaded(maxRows: kPrintLogMaxRows, maxAge: kPrintLogMaxAge);
     } catch (_) {
       // keep rows pending for the next pass
+      diagnostics.warn('print-log', 'print-log upload pass failed — rows kept pending');
     }
     await refreshPrintLogPending();
     return uploaded;
@@ -437,6 +444,9 @@ class AppSession extends ChangeNotifier {
   // -------------------------------------------------------- diagnostics ------
   /// In-app log buffer (bounded, in-memory) that the diagnostics bundle ships.
   final DiagnosticLog diagnostics;
+
+  /// Durable sink for the warn/error stream (survives a crash/restart).
+  final DiagnosticLogStore _diagStore;
 
   /// Last time a 5xx auto-queued a diagnostic bundle (throttle, not a spam valve).
   DateTime? _lastAutoDiagnosticAt;
@@ -464,6 +474,7 @@ class AppSession extends ChangeNotifier {
       await sendDiagnostics(description: 'auto · ${e.label}${e.detail != null ? ' — ${e.detail}' : ''}');
     } catch (_) {
       // Diagnostics must never break the app.
+      diagnostics.warn('diagnostics', 'auto diagnostic bundle failed to submit');
     }
   }
 
@@ -568,6 +579,23 @@ class AppSession extends ChangeNotifier {
     diagnosticPending = await _diagReporter.pendingCount();
     notifyListeners();
     return diagnosticPending;
+  }
+
+  /// Load the durable warn/error lines a PREVIOUS session (or the crash before
+  /// this start) left behind, tagging them as prior-session so the bundle and
+  /// the Device log screen can tell them apart. Then prune by age. Best-effort:
+  /// a store failure must never block startup.
+  Future<void> restoreDiagnostics() async {
+    try {
+      final prev = await _diagStore.recent(limit: kDiagMaxLogLines);
+      if (prev.isNotEmpty) {
+        diagnostics.restore([for (final l in prev) l.asPreviousSession()]);
+      }
+      await _diagStore.prune(maxRows: kDiagMaxPersistedRows, maxAge: kDiagMaxPersistedAge);
+    } catch (_) {
+      diagnostics.warn('diagnostics', 'previous-session log restore failed');
+    }
+    notifyListeners();
   }
 
   /// Wire the print path (queue + transport) once the device printer is known.
@@ -685,7 +713,10 @@ class AppSession extends ChangeNotifier {
       }
       deviceVersions = held;
       notifyListeners();
-    } catch (_) {/* keep whatever last-known-good state we already have */}
+    } catch (_) {
+      /* keep whatever last-known-good state we already have */
+      diagnostics.warn('cache', 'config hydration from cache failed — last-known-good kept');
+    }
   }
 
   Future<Map<String, dynamic>> _cachedDomain(ConfigCache cache, String d) async {
@@ -799,7 +830,10 @@ class AppSession extends ChangeNotifier {
         }
       }
       notifyListeners();
-    } catch (_) {/* hydration is best-effort — never block startup */}
+    } catch (_) {
+      /* hydration is best-effort — never block startup */
+      diagnostics.warn('settle', 'settlement hydration from outbox failed');
+    }
   }
 
   /// Local settlements not yet accepted by the server (pending or FAILED) — the
@@ -873,6 +907,7 @@ class AppSession extends ChangeNotifier {
       }
     } catch (_) {
       // Best-effort: a flush failure never breaks a sync.
+      diagnostics.warn('settle', 'settlement flush failed — queue left intact');
     }
     notifyListeners();
     return sent;
@@ -914,13 +949,17 @@ class AppSession extends ChangeNotifier {
     if (payload != null) {
       try {
         await _push.enqueue('order_settle', key, payload);
-      } catch (_) {}
+      } catch (_) {
+        diagnostics.warn('settle', 're-commit enqueue failed — retrying the queued snapshot');
+      }
     }
     // A re-commit is a fresh attempt — clear any stored FAILED so a restart
     // does not re-flag a settlement the cashier has already re-committed.
     try {
       await _push.clearFailure('order_settle', key);
-    } catch (_) {}
+    } catch (_) {
+      diagnostics.warn('settle', 're-commit failure-clear failed');
+    }
     rec.status = 'pending';
     rec.errorCode = null;
     rec.bill['offline'] = true;
@@ -1038,6 +1077,7 @@ class AppSession extends ChangeNotifier {
       lastRelease = await _releaseStore.load();
     } catch (_) {
       lastRelease = null;
+      diagnostics.warn('update', 'persisted release manifest unreadable');
     }
     // Storage hygiene: builds before the prune-before-download fix left full-size
     // APKs stacked in app storage. Clear them on every start. Best-effort: the
@@ -1047,6 +1087,8 @@ class AppSession extends ChangeNotifier {
     // Rebuild any un-accepted settlements from the durable outbox so a FAILED
     // sale still reads FAILED (with its server code) after a restart.
     await hydrateSettlements();
+    // Recover the warn/error trail a previous session (or crash) left behind.
+    await restoreDiagnostics();
     notifyListeners();
   }
 
@@ -1121,11 +1163,15 @@ class AppSession extends ChangeNotifier {
       // Config sync is best-effort; failure must not block the cashier.
       try {
         await refreshConfig();
-      } catch (_) {}
+      } catch (_) {
+        diagnostics.warn('login', 'post-login config sync failed');
+      }
       // Report printer health after config lands (PRD: check at login). Best-effort.
       try {
         await reportPrinterHealth();
-      } catch (_) {}
+      } catch (_) {
+        diagnostics.warn('login', 'post-login printer health report failed');
+      }
       return true;
     } on PosApiException catch (e) {
       lastError = _loginError(e);
@@ -1153,6 +1199,7 @@ class AppSession extends ChangeNotifier {
         await _posApi.logout();
       } catch (_) {
         // Offline logout needs online to release; best-effort here.
+        diagnostics.warn('logout', 'server not reached — session left open server-side');
       }
     }
     ctx = ctx.toSessionless(
@@ -1196,7 +1243,10 @@ class AppSession extends ChangeNotifier {
         updateOffered = release.isNewerThan(appVersion.versionCode);
         try {
           await _releaseStore.save(release);
-        } catch (_) {/* keep the in-memory copy */}
+        } catch (_) {
+          /* keep the in-memory copy */
+          diagnostics.warn('update', 'release manifest could not be persisted');
+        }
       }
     } catch (e) {
       lastUpdateCheckedAt = _now();
@@ -1236,14 +1286,20 @@ class AppSession extends ChangeNotifier {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is List) return [for (final o in decoded) if (o is Map<String, dynamic>) o];
-    } catch (_) {/* a corrupt cache is just "no cache" */}
+    } catch (_) {
+      /* a corrupt cache is just "no cache" */
+      diagnostics.debug('cache', 'open-orders cache unreadable');
+    }
     return null;
   }
 
   Future<void> cacheOpenOrders(List<Map<String, dynamic>> orders) async {
     try {
       await _configCache?.writeJson(_openOrdersKey, 1, orders);
-    } catch (_) {/* best-effort: never block the till on a cache write */}
+    } catch (_) {
+      /* best-effort: never block the till on a cache write */
+      diagnostics.warn('cache', 'open-orders cache write failed');
+    }
   }
 
   /// Repair path for a stuck tablet: forget which domains we believe we hold so
@@ -1296,6 +1352,7 @@ class AppSession extends ChangeNotifier {
             final decoded = jsonDecode(raw);
             return decoded is Map<String, dynamic> ? decoded : const {};
           } catch (_) {
+            diagnostics.warn('cache', 'cached $d payload is unreadable — treated as empty');
             return const {};
           }
         }
@@ -1349,7 +1406,10 @@ class AppSession extends ChangeNotifier {
           if (payload is Map<String, dynamic>) {
             try {
               await cache.writeJson(e.key, serverVersions[e.key] ?? 0, payload);
-            } catch (_) {/* keep last-known-good */}
+            } catch (_) {
+              /* keep last-known-good */
+              diagnostics.warn('cache', 'failed to persist synced ${e.key} payload');
+            }
           }
         }
         }
@@ -1368,7 +1428,9 @@ class AppSession extends ChangeNotifier {
       // shift is already open (server returns only OPEN shifts). Never blocks.
       try {
         await shiftController.restore();
-      } catch (_) {}
+      } catch (_) {
+        diagnostics.warn('shift', 'shift restore failed');
+      }
       return true;
     } on PosApiException catch (e) {
       lastError = _configError(e);
@@ -1529,6 +1591,15 @@ class AppDependencies {
         return '${dir.path}/gundam_pos/gundam.db';
       },
     );
+    // The warn/error diagnostics stream persists to the same device DB file, so
+    // a crash/restart does not erase the evidence.
+    final diagStore = SqliteDiagnosticLogStore(
+      localDb: LocalDb(),
+      pathProvider: () async {
+        final dir = await getApplicationSupportDirectory();
+        return '${dir.path}/gundam_pos/gundam.db';
+      },
+    );
     // Tenant media FILES: the manifest index lives in the same device DB, the
     // bytes under <support>/gundam_pos/media (the tablet prints offline).
     final mediaStore = SqliteMediaCacheStore(
@@ -1549,6 +1620,7 @@ class AppDependencies {
       receiptSequence: posStore,
       pushStore: posStore,
       printLogStore: printLogStore,
+      diagStore: diagStore,
       printTransport: AppSession._defaultPrintTransport(
         imageSourceProvider: () => imageRef[0],
       ),
@@ -1569,6 +1641,7 @@ class AppDependencies {
         imageRef[0] = MediaSyncPrintImageSource(sync);
       } catch (_) {
         // No platform dir (CI/test host) → the IMAGE block prints its placeholder.
+        session.diagnostics.warn('media', 'media cache unavailable — IMAGE blocks use the placeholder');
       }
     }());
     return session;

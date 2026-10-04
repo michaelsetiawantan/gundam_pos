@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
 import 'package:gundam_pos/data/pos_store.dart';
+import 'package:gundam_pos/services/diagnostic_report.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/release_store.dart';
 import 'package:gundam_pos/state/session_store.dart';
@@ -341,6 +342,7 @@ class FakeBackend {
     ServerAddressStore? addressStore,
     ReleaseInfoStore? releaseStore,
     PushStore? pushStore,
+    DiagnosticLogStore? diagStore,
   }) {
     final client = ApiClient(
       baseUrl: 'http://fake.test',
@@ -354,6 +356,7 @@ class FakeBackend {
       serverAddressStore: addressStore,
       releaseStore: releaseStore,
       pushStore: pushStore,
+      diagStore: diagStore,
     );
   }
 

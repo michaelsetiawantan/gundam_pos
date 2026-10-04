@@ -4,6 +4,27 @@ Format: [Keep a Changelog](https://keepachangelog.com/) · versi semver, version
 Changelog ini yang dikirim ke server saat publish release (kolom `changelog` di `PosRelease`) dan
 yang ditampilkan ke tablet sebagai "what's new".
 
+## [0.12.2] — 2026-10-04
+
+Diagnostics grew up: the tablet now leaves a readable trail for problems that never touch the API, and that
+trail survives the app dying.
+
+### Added
+- **Device log screen** (More → Open device log): the recent log lines newest-first with level, tag, time and a
+  marker for lines that came from an earlier run; filter per level, a count (`N lines · X error, Y warn`),
+  Copy, Refresh and **Send to server** (the durable send path: queued in the outbox first, uploaded after).
+- **App failures are logged.** Thirteen previously silent `catch` paths now write a bounded line through the
+  same log — outbox order/line/send refusals with their code, order-queue and settlement flush failures,
+  print-log pending/upload failures, config hydration from cache, open-orders cache reads/writes, shift
+  restore, media cache init and release-manifest load/save. Behaviour is unchanged: nothing new is thrown and
+  no password/token ever appears in a line.
+
+### Fixed
+- **The trail survives a crash.** The log ring was in-memory only, so the evidence died with the process —
+  exactly when it matters. warn/error lines are now persisted to a bounded SQLite table (`device_log`, schema
+  4 → 5), restored on the next start and shipped in the diagnostic bundle tagged `previousSession: true`.
+  Capped at 200 rows / 7 days; info lines stay memory-only on purpose.
+
 ## [0.12.1] — 2026-10-04
 
 ### Fixed

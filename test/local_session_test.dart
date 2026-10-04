@@ -4,8 +4,8 @@ import 'package:gundam_pos/state/session_store.dart';
 
 void main() {
   group('local SQLite schema', () {
-    test('user_version contract is 4 (migration-ready)', () {
-      expect(schemaVersion, 4);
+    test('user_version contract is 5 (migration-ready)', () {
+      expect(schemaVersion, 5);
     });
 
     test('v1 migration creates all LOCAL-SCHEMA tables idempotently', () {
@@ -44,6 +44,14 @@ void main() {
       final ddl = migrationUpStatements(4).join('\n');
       expect(ddl, contains('ALTER TABLE pending_sync ADD COLUMN status'));
       expect(ddl, contains('ALTER TABLE pending_sync ADD COLUMN error_code'));
+    });
+
+    test('v5 migration adds the durable diagnostics device_log table', () {
+      // v4 does NOT yet carry it; v5 does — a device at v4 gains it on upgrade.
+      expect(migrationUpStatements(4).join('\n'), isNot(contains('CREATE TABLE IF NOT EXISTS device_log')));
+      final ddl = migrationUpStatements(5).join('\n');
+      expect(ddl, contains('CREATE TABLE IF NOT EXISTS device_log'));
+      expect(ddl, contains('idx_devicelog_at'));
     });
 
     test('migration adds the receipt-idempotency and queue indexes', () {

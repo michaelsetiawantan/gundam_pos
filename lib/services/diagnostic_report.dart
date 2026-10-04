@@ -8,12 +8,15 @@
 /// picks the item up. Idempotent on `clientReportId` (the server dedupes).
 library;
 
+import 'dart:async';
 import 'dart:math';
 
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
+import 'package:gundam_pos/data/local_db.dart';
 import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/data/print_log_store.dart';
+import 'package:sqflite/sqflite.dart' as sqf;
 
 // ---------------------------------------------------------------------------
 // Caps — the ONE place binds stay bounded (a rogue log must never bloat a POST).
@@ -36,23 +39,44 @@ String _bound(String? s, int max) {
 // ---------------------------------------------------------------------------
 
 class LogLine {
-  const LogLine({required this.at, required this.level, required this.tag, required this.message});
+  const LogLine({
+    required this.at,
+    required this.level,
+    required this.tag,
+    required this.message,
+    this.fromPreviousSession = false,
+  });
 
   final DateTime at;
   final String level; // debug | info | warn | error
   final String tag;
   final String message;
 
+  /// True when this line was RECOVERED from the durable store (a previous
+  /// session / a crash), so the bundle can mark it as prior-session evidence.
+  final bool fromPreviousSession;
+
+  LogLine asPreviousSession() => LogLine(
+        at: at,
+        level: level,
+        tag: tag,
+        message: message,
+        fromPreviousSession: true,
+      );
+
   Map<String, dynamic> toJson() => {
         'at': at.toUtc().toIso8601String(),
         'level': level,
         'tag': tag,
         'message': _bound(message, kDiagMaxTextLen),
+        if (fromPreviousSession) 'previousSession': true,
       };
 }
 
-/// Bounded, in-memory, newest-last log buffer. Deliberately NOT persisted: a
-/// diagnostic bundle is a point-in-time snapshot of what the device just did.
+/// Bounded log buffer. Newest-last. When a [persist] sink is attached (the app
+/// wiring does this) every `warn`/`error` line is ALSO written to the durable
+/// store (fire-and-forget) so a crash/restart does not erase the evidence; the
+/// sink is capped by row count and age (see [DiagnosticLogStore]).
 class DiagnosticLog {
   DiagnosticLog({this.capacity = kDiagMaxLogLines});
 
@@ -61,15 +85,33 @@ class DiagnosticLog {
 
   DateTime Function() now = DateTime.now;
 
+  /// Optional durable sink for `warn`/`error` lines. Null in tests / screens
+  /// that build their own log, and never allowed to break logging.
+  DiagnosticLogStore? persist;
+
   void add(String level, String tag, String message) {
-    _lines.add(LogLine(at: now(), level: level, tag: tag, message: message));
+    final line = LogLine(at: now(), level: level, tag: tag, message: message);
+    _lines.add(line);
     if (_lines.length > capacity) _lines.removeRange(0, _lines.length - capacity);
+    final sink = persist;
+    if (sink != null && (level == 'warn' || level == 'error')) {
+      // Fire-and-forget: a store failure must never surface or throw here.
+      unawaited(sink.append(line).catchError((Object _) {}));
+    }
   }
 
   void debug(String tag, String message) => add('debug', tag, message);
   void info(String tag, String message) => add('info', tag, message);
   void warn(String tag, String message) => add('warn', tag, message);
   void error(String tag, String message) => add('error', tag, message);
+
+  /// Insert lines RECOVERED from a previous session at the FRONT of the buffer
+  /// (they happened first), keeping capacity. Used at session start.
+  void restore(List<LogLine> lines) {
+    if (lines.isEmpty) return;
+    _lines.insertAll(0, lines);
+    if (_lines.length > capacity) _lines.removeRange(0, _lines.length - capacity);
+  }
 
   List<LogLine> snapshot() => List<LogLine>.unmodifiable(_lines);
 
@@ -81,6 +123,142 @@ class DiagnosticLog {
 /// Process-wide buffer. Screens/tests may create their own instance, but the app
 /// wires this one so every layer writes to the same stream.
 final DiagnosticLog diagnosticLog = DiagnosticLog();
+
+// ---------------------------------------------------------------------------
+// Durable log store — crash/restart survival for the warn/error stream.
+// ---------------------------------------------------------------------------
+
+/// Row cap + age cap for the persisted stream — the ONE place the on-disk log
+/// stays bounded. Only `warn`/`error` lines are persisted (that is the evidence
+/// a technician needs after a crash), so this never bloats.
+const int kDiagMaxPersistedRows = 200;
+const Duration kDiagMaxPersistedAge = Duration(days: 7);
+
+/// Durable sink for the diagnostic log. Mirrors `PrintLogStore`: injectable,
+/// with an in-memory impl (tests + platform fallback) and a sqflite impl.
+abstract class DiagnosticLogStore {
+  Future<void> append(LogLine line);
+  Future<List<LogLine>> recent({int limit});
+  Future<void> prune({required int maxRows, required Duration maxAge});
+}
+
+/// In-memory impl (tests + fallback when sqflite/platform is unavailable).
+class MemoryDiagnosticLogStore implements DiagnosticLogStore {
+  MemoryDiagnosticLogStore({DateTime Function()? now}) : _now = now ?? DateTime.now;
+
+  final DateTime Function() _now;
+  final List<LogLine> _rows = [];
+
+  @override
+  Future<void> append(LogLine line) async {
+    _rows.add(line);
+    if (_rows.length > kDiagMaxPersistedRows) {
+      _rows.removeRange(0, _rows.length - kDiagMaxPersistedRows);
+    }
+  }
+
+  @override
+  Future<List<LogLine>> recent({int limit = kDiagMaxPersistedRows}) async {
+    if (_rows.length <= limit) return _rows.toList();
+    return _rows.sublist(_rows.length - limit);
+  }
+
+  @override
+  Future<void> prune({required int maxRows, required Duration maxAge}) async {
+    final cutoff = _now().subtract(maxAge);
+    _rows.removeWhere((l) => l.at.isBefore(cutoff));
+  }
+}
+
+/// sqflite impl (survives restart). Degrades to memory when the platform path
+/// is unavailable, exactly like the other local stores.
+class SqliteDiagnosticLogStore implements DiagnosticLogStore {
+  SqliteDiagnosticLogStore({
+    required LocalDb localDb,
+    String? path,
+    Future<String> Function()? pathProvider,
+    bool inMemory = false,
+  })  : _localDb = localDb,
+        _path = path,
+        _pathProvider = pathProvider,
+        _inMemory = inMemory;
+
+  final LocalDb _localDb;
+  final String? _path;
+  final Future<String> Function()? _pathProvider;
+  final bool _inMemory;
+
+  sqf.Database? _db;
+  MemoryDiagnosticLogStore? _fallback;
+
+  MemoryDiagnosticLogStore get _mem => _fallback ??= MemoryDiagnosticLogStore();
+
+  Future<sqf.Database> _open() async {
+    if (_db == null) {
+      var dbPath = _path;
+      final provider = _pathProvider;
+      if (dbPath == null && provider != null) {
+        try {
+          dbPath = await provider();
+        } catch (_) {}
+      }
+      _db = (dbPath == null || dbPath.isEmpty)
+          ? await _localDb.open(':memory:', inMemory: true)
+          : await _localDb.open(dbPath, inMemory: _inMemory);
+    }
+    return _db!;
+  }
+
+  @override
+  Future<void> append(LogLine line) async {
+    try {
+      final db = await _open();
+      await db.rawInsert(
+          'INSERT OR REPLACE INTO device_log (at, level, tag, message) VALUES (?,?,?,?)',
+          [line.at.millisecondsSinceEpoch, line.level, line.tag, line.message]);
+      // Keep the table bounded at every write (never grows without limit).
+      await db.rawDelete(
+          'DELETE FROM device_log WHERE id NOT IN '
+          '(SELECT id FROM device_log ORDER BY id DESC LIMIT ?)',
+          [kDiagMaxPersistedRows]);
+    } catch (_) {
+      await _mem.append(line);
+    }
+  }
+
+  @override
+  Future<List<LogLine>> recent({int limit = kDiagMaxPersistedRows}) async {
+    try {
+      final db = await _open();
+      final rows = await db.rawQuery(
+          'SELECT at, level, tag, message FROM device_log ORDER BY id DESC LIMIT ?',
+          [limit]);
+      // DESC gives newest-first; reverse to chronological (oldest-first) so the
+      // recovered lines read in the order they happened.
+      return rows.reversed.map(_fromRow).toList();
+    } catch (_) {
+      return _mem.recent(limit: limit);
+    }
+  }
+
+  @override
+  Future<void> prune({required int maxRows, required Duration maxAge}) async {
+    try {
+      final db = await _open();
+      final cutoff = DateTime.now().subtract(maxAge).millisecondsSinceEpoch;
+      await db.rawDelete('DELETE FROM device_log WHERE at < ?', [cutoff]);
+    } catch (_) {
+      await _mem.prune(maxRows: maxRows, maxAge: maxAge);
+    }
+  }
+
+  LogLine _fromRow(Map<String, Object?> r) => LogLine(
+        at: DateTime.fromMillisecondsSinceEpoch(((r['at'] as num?)?.toInt()) ?? 0),
+        level: (r['level'] as String?) ?? 'error',
+        tag: (r['tag'] as String?) ?? '',
+        message: (r['message'] as String?) ?? '',
+      );
+}
 
 // ---------------------------------------------------------------------------
 // Bundle builder (pure → unit-testable without network or platform).

@@ -8,7 +8,7 @@ library;
 
 import 'package:sqflite/sqflite.dart' as sqf;
 
-const int schemaVersion = 4;
+const int schemaVersion = 5;
 
 /// Migration step v1 → user_version=1. Every step is idempotent (IF NOT EXISTS
 /// / guards). Each bump to `schemaVersion` MUST add a new step here; never
@@ -229,6 +229,20 @@ const List<List<String>> migrations = [
     'ALTER TABLE pending_sync ADD COLUMN status TEXT;',
     'ALTER TABLE pending_sync ADD COLUMN error_code TEXT;',
   ],
+  // v5 (user_version=5) — durable diagnostics log so a crash/restart does not
+  // erase the warn/error trail. Only warn/error lines are written and the table
+  // is capped by row count (at every write) and age (at session start).
+  [
+    '''
+    CREATE TABLE IF NOT EXISTS device_log (
+      id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      at      INTEGER NOT NULL,
+      level   TEXT NOT NULL,
+      tag     TEXT NOT NULL,
+      message TEXT NOT NULL
+    );''',
+    'CREATE INDEX IF NOT EXISTS idx_devicelog_at ON device_log(at);',
+  ],
 ];
 
 /// SQL to apply when migrating the DB up to the given absolute version step.
@@ -236,6 +250,7 @@ List<String> migrationUpStatements(int targetVersion) => [
       if (targetVersion >= 1) ...migrations[0],
       if (targetVersion >= 2) ...migrations[1],
       if (targetVersion >= 4) ...migrations[2],
+      if (targetVersion >= 5) ...migrations[3],
       // future steps appended in order
     ];
 

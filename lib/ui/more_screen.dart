@@ -9,6 +9,7 @@ import 'package:gundam_pos/services/update_service.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/ui/about_screen.dart';
+import 'package:gundam_pos/ui/device_log_screen.dart';
 import 'package:gundam_pos/ui/print_diagnostics_screen.dart';
 import 'package:gundam_pos/ui/printer_status.dart';
 import 'package:gundam_pos/ui/theme.dart';
@@ -401,6 +402,17 @@ class _MoreScreenState extends State<MoreScreen> {
                   ),
                   const SizedBox(height: 4),
                   const Text('Report a problem to the server: bundles the device context, the print-log summary and recent app log lines with your note. Offline it is queued and sent on the next sync.',
+                      style: TextStyle(color: PosTheme.slate, fontSize: 12)),
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => DeviceLogScreen(session: s)),
+                    ),
+                    icon: const Icon(Icons.article_outlined, size: 18),
+                    label: const Text('Open device log'),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text('See the recent app log lines on this tablet (time, level, tag, message) — warnings and errors from this and the previous session. Copy them or send them to the server.',
                       style: TextStyle(color: PosTheme.slate, fontSize: 12)),
                   const SizedBox(height: 12),
                   OutlinedButton(
