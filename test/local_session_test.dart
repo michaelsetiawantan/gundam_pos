@@ -4,8 +4,8 @@ import 'package:gundam_pos/state/session_store.dart';
 
 void main() {
   group('local SQLite schema', () {
-    test('user_version contract is 3 (migration-ready)', () {
-      expect(schemaVersion, 3);
+    test('user_version contract is 4 (migration-ready)', () {
+      expect(schemaVersion, 4);
     });
 
     test('v1 migration creates all LOCAL-SCHEMA tables idempotently', () {
@@ -36,6 +36,14 @@ void main() {
       expect(ddl, contains('client_log_id'));
       expect(ddl, contains('upload_state'));
       expect(ddl, contains('idx_printlog_upload'));
+    });
+
+    test('v4 migration adds the durable push-failure columns to pending_sync', () {
+      // v3 does NOT yet carry them; v4 does — a device at v3 gains them on upgrade.
+      expect(migrationUpStatements(3).join('\n'), isNot(contains('ALTER TABLE pending_sync')));
+      final ddl = migrationUpStatements(4).join('\n');
+      expect(ddl, contains('ALTER TABLE pending_sync ADD COLUMN status'));
+      expect(ddl, contains('ALTER TABLE pending_sync ADD COLUMN error_code'));
     });
 
     test('migration adds the receipt-idempotency and queue indexes', () {

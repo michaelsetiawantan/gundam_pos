@@ -8,7 +8,7 @@ library;
 
 import 'package:sqflite/sqflite.dart' as sqf;
 
-const int schemaVersion = 3;
+const int schemaVersion = 4;
 
 /// Migration step v1 → user_version=1. Every step is idempotent (IF NOT EXISTS
 /// / guards). Each bump to `schemaVersion` MUST add a new step here; never
@@ -222,12 +222,20 @@ const List<List<String>> migrations = [
     'CREATE INDEX IF NOT EXISTS idx_printlog_created ON print_log(created_at);',
     'CREATE INDEX IF NOT EXISTS idx_printlog_upload ON print_log(upload_state, created_at);',
   ],
+  // v4 (user_version=4) — durable push FAILURE state on the outbox row so a
+  // settlement the server REFUSED still shows FAILED (with its error code)
+  // after a restart, not just in memory. Additive columns, default NULL.
+  [
+    'ALTER TABLE pending_sync ADD COLUMN status TEXT;',
+    'ALTER TABLE pending_sync ADD COLUMN error_code TEXT;',
+  ],
 ];
 
 /// SQL to apply when migrating the DB up to the given absolute version step.
 List<String> migrationUpStatements(int targetVersion) => [
       if (targetVersion >= 1) ...migrations[0],
       if (targetVersion >= 2) ...migrations[1],
+      if (targetVersion >= 4) ...migrations[2],
       // future steps appended in order
     ];
 
@@ -260,7 +268,13 @@ class LocalDb {
   /// Steps use IF NOT EXISTS, so replaying the full set on upgrade is safe.
   Future<void> applyMigrations(sqf.DatabaseExecutor db) async {
     for (final step in migrationUpStatements(schemaVersion)) {
-      await db.execute(step);
+      try {
+        await db.execute(step);
+      } catch (e) {
+        // Idempotent replay of an ALTER that already ran (a partial migration
+        // re-applied on the next open) — anything else is a real failure.
+        if (!'$e'.toLowerCase().contains('duplicate column name')) rethrow;
+      }
     }
     await db.execute('PRAGMA user_version = $schemaVersion;');
   }

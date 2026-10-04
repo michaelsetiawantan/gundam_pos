@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:gundam_pos/api/api_client.dart';
 import 'package:gundam_pos/api/pos_api.dart';
+import 'package:gundam_pos/data/pos_store.dart';
 import 'package:gundam_pos/state/app_session.dart';
 import 'package:gundam_pos/state/release_store.dart';
 import 'package:gundam_pos/state/session_store.dart';
@@ -339,6 +340,7 @@ class FakeBackend {
     SessionStore? store,
     ServerAddressStore? addressStore,
     ReleaseInfoStore? releaseStore,
+    PushStore? pushStore,
   }) {
     final client = ApiClient(
       baseUrl: 'http://fake.test',
@@ -351,6 +353,7 @@ class FakeBackend {
       sessionStore: store ?? InMemorySessionStore(),
       serverAddressStore: addressStore,
       releaseStore: releaseStore,
+      pushStore: pushStore,
     );
   }
 

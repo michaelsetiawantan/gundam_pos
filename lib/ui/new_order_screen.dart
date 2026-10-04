@@ -62,6 +62,8 @@ class _NewOrderScreenState extends State<NewOrderScreen> {
       shortcode: widget.session.shortcode,
       // Late print warnings (captain/bev) reach the operator via the shell.
       onPrintAlerts: widget.session.notePrintAlerts,
+      // Continue this order's captain batch sequence (survives merge/split).
+      batchTracker: widget.session.batchTracker,
     );
     final ok = await controller.startOrder(
       tableId: id,

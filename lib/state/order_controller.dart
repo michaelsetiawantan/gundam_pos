@@ -29,6 +29,7 @@ class OrderController extends ChangeNotifier {
     this.orderNumbers,
     this.shortcode,
     this.onPrintAlerts,
+    this.batchTracker,
   });
 
   final PosApi posApi;
@@ -48,6 +49,12 @@ class OrderController extends ChangeNotifier {
   /// is optimistic (line shows instantly, queued in the outbox, flushed when
   /// online). When null the legacy synchronous server-only path runs unchanged.
   final PushStore? pushStore;
+
+  /// Optional cross-controller batch metadata (shared by the app session). When
+  /// present, the captain batch sequence is remembered per order id so a
+  /// merge/split — which hands the order to a NEW controller — continues the
+  /// sequence instead of restarting at A.
+  final BatchTracker? batchTracker;
 
   /// The outlet print path (from the app session). Null → printing is a no-op.
   final PrintDispatcher? printer;
@@ -610,6 +617,7 @@ class OrderController extends ChangeNotifier {
       final batch = r['batch'] as Map<String, dynamic>?;
       lastBatchLabel = batch?['label'] as String?;
       captainBatchCount = _intOf(batch?['sequence'], captainBatchCount) + 1;
+      batchTracker?.record(id, captainBatchCount, lastBatchLabel);
       final justSent = [for (final l in cart.lines) if (!l.sent) l];
       final batchIndex = _batchSeq++;
       for (final line in cart.lines) {
@@ -669,6 +677,7 @@ class OrderController extends ChangeNotifier {
     }
     captainBatchCount += 1;
     lastBatchLabel = String.fromCharCode(65 + (captainBatchCount - 1) % 26);
+    batchTracker?.record(id, captainBatchCount, lastBatchLabel);
     final store = pushStore;
     if (store != null) {
       try {
@@ -699,6 +708,10 @@ class OrderController extends ChangeNotifier {
     final local = order['localOnly'] == true;
     pendingCreate = local;
     pricing = local ? null : _newPricing();
+    // Continue the captain batch sequence this order already had (a merge/split
+    // hands the order to this fresh controller — without this it restarts at A).
+    captainBatchCount = batchTracker?.countFor(id) ?? 0;
+    lastBatchLabel = batchTracker?.labelFor(id);
     final table = order['table'];
     tableName = (order['tableName'] ?? (table is Map ? table['name'] : null)) as String?;
     openedAt = DateTime.tryParse((order['openedAt'] as String?) ?? '')?.toLocal();
@@ -1006,3 +1019,52 @@ double _num(Object? v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
 /// JSON string ("2") must not throw. Falls back when the field is absent.
 int _intOf(Object? v, int fallback) =>
     v is num ? v.toInt() : (num.tryParse('$v')?.toInt() ?? fallback);
+
+/// Cross-controller captain-batch metadata, keyed by order id. A merge/split
+/// creates a NEW order on the server and the tablet resumes it with a fresh
+/// [OrderController]; this tracker lets the batch label + sequence follow the
+/// order instead of restarting at A. Held by the app session (one per app run).
+class BatchTracker {
+  final Map<String, int> _count = {};
+  final Map<String, String> _label = {};
+
+  int countFor(String orderId) => _count[orderId] ?? 0;
+
+  String? labelFor(String orderId) => _label[orderId];
+
+  void record(String orderId, int count, String? label) {
+    if (orderId.isEmpty) return;
+    _count[orderId] = count;
+    if (label != null && label.isNotEmpty) _label[orderId] = label;
+  }
+
+  /// Carry ONE source order's batch state onto a RESULT order id (a split part).
+  void carry(String fromOrderId, String toOrderId) {
+    final c = _count[fromOrderId];
+    final l = _label[fromOrderId];
+    if (c == null && l == null) return;
+    _count[toOrderId] = c ?? 0;
+    if (l != null) _label[toOrderId] = l;
+  }
+
+  /// Merge several source orders into one result: take the HIGHEST batch count
+  /// (so the merged bill's next batch continues past every source) and the
+  /// label that goes with it.
+  void mergeInto(String toOrderId, Iterable<String> fromOrderIds) {
+    var best = _count[toOrderId] ?? 0;
+    String? bestLabel = _label[toOrderId];
+    for (final from in fromOrderIds) {
+      final c = _count[from] ?? 0;
+      if (c > best) {
+        best = c;
+        bestLabel = _label[from] ?? bestLabel;
+      } else if (c == best && c > 0 && _label[from] != null) {
+        bestLabel = _label[from];
+      }
+    }
+    if (best > 0 || bestLabel != null) {
+      _count[toOrderId] = best;
+      if (bestLabel != null && bestLabel.isNotEmpty) _label[toOrderId] = bestLabel;
+    }
+  }
+}

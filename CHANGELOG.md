@@ -4,6 +4,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/) · versi semver, version
 Changelog ini yang dikirim ke server saat publish release (kolom `changelog` di `PosRelease`) dan
 yang ditampilkan ke tablet sebagai "what's new".
 
+## [0.12.1] — 2026-10-04
+
+### Fixed
+- **The queue now pushes when the app comes back to the front.** Auto-push used to ride config sync only, so a
+  cashier who never left the order screen could sit on a full offline queue. The app shell observes the
+  lifecycle and pushes on resume — but only when signed in, idle and the queue is not empty, so a resume never
+  fires an empty round trip.
+- **A refused settlement keeps its FAILED badge across a restart.** The refusal (status + the server's error
+  code) lived only in memory; the outbox row in SQLite now stores it and the session rehydrates it on start, so
+  the cashier can still see what was refused and why. Idempotency is unchanged: the same key is retried, never
+  a second settlement.
+- **Merging tables carries the captain batches.** The next batch label is derived from the order's batch count,
+  so a merge used to restart the merged table at "A" although A/B were already printed on its dishes. The merge
+  now moves the CaptainBatch rows (and their line links) with the lines — the merged table continues at C, D…
+
+### Notes
+- SQLite schema version 3 → 4 (additive `ALTER TABLE pending_sync ADD COLUMN status/error_code`), applied
+  automatically on first launch of this build.
+
 ## [0.12.0] — 2026-10-04
 
 ### Fixed

@@ -168,6 +168,36 @@ class _TableOpsSheetState extends State<TableOpsSheet> {
     return null;
   }
 
+  /// Copy the SOURCE order(s)' captain batch metadata onto the RESULT order(s)
+  /// the server returned, so a resumed merged/split order continues the batch
+  /// sequence instead of restarting at A. The server ships no batch info for
+  /// the result, so this carries what this tablet already knows (same app run).
+  void _carryBatches(Map<String, dynamic> response) {
+    final tracker = widget.session.batchTracker;
+    final result = response['result'];
+    if (result is! Map) return;
+    switch (_kind) {
+      case TableOpKind.merge:
+        final toId = result['orderId']?.toString();
+        if (toId != null && toId.isNotEmpty) tracker.mergeInto(toId, _selected);
+        break;
+      case TableOpKind.split:
+        final parts = result['parts'];
+        if (parts is List) {
+          for (final p in parts) {
+            final pid = (p is Map ? p['id'] : null)?.toString();
+            if (pid == null || pid.isEmpty) continue;
+            for (final src in _selected) {
+              tracker.carry(src, pid);
+            }
+          }
+        }
+        break;
+      case TableOpKind.move:
+        break; // move keeps the SAME order id — nothing to carry
+    }
+  }
+
   Future<void> _submit() async {
     final body = _buildBody();
     if (body == null) return;
@@ -176,7 +206,8 @@ class _TableOpsSheetState extends State<TableOpsSheet> {
       _error = null;
     });
     try {
-      await widget.session.posApi.tableOps(widget.session.tenantId!, body);
+      final res = await widget.session.posApi.tableOps(widget.session.tenantId!, body);
+      _carryBatches(res);
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on PosApiException catch (e) {

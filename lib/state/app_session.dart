@@ -32,6 +32,7 @@ import 'package:gundam_pos/services/printer_health.dart';
 import 'package:gundam_pos/services/printer_health_report.dart';
 import 'package:gundam_pos/services/update_service.dart';
 import 'package:gundam_pos/services/usb_print_transport.dart';
+import 'package:gundam_pos/state/order_controller.dart';
 import 'package:gundam_pos/state/payment_controller.dart';
 import 'package:gundam_pos/state/release_store.dart';
 import 'package:gundam_pos/state/session_store.dart';
@@ -204,6 +205,11 @@ class AppSession extends ChangeNotifier {
   /// The durable outbox itself — handed to [OrderController] so offline line
   /// adds survive a restart and flush when the network returns.
   PushStore get pushStore => _push;
+
+  /// Cross-controller batch metadata per order id. A merge/split hands an order
+  /// to a NEW [OrderController]; sharing this tracker keeps the captain batch
+  /// sequence (label + count) continuous instead of restarting at A.
+  final BatchTracker batchTracker = BatchTracker();
 
   /// Cached count of order items (`order_create` + `order_line`) waiting in the
   /// outbox. Refreshed by [flushOrderQueue]; shown honestly.
@@ -760,6 +766,42 @@ class AppSession extends ChangeNotifier {
 
   SettlementRecord? settlementFor(String key) => settlements[key];
 
+  /// Rebuild the in-memory settlement records from the DURABLE outbox rows the
+  /// server has not accepted yet. Called at session start so a settlement the
+  /// server REFUSED still shows FAILED (with the same error code) after a
+  /// restart — the record itself is memory-only; the refusal is on the row.
+  Future<void> hydrateSettlements() async {
+    try {
+      final items = await _push.pending();
+      for (final it in items) {
+        if (it['type'] != 'order_settle') continue;
+        final key = '${it['id']}';
+        final p = it['payload_json'];
+        if (p is! Map) continue;
+        final bill = <String, dynamic>{
+          'orderId': p['orderId'],
+          'receiptId': p['receiptId'],
+          'status': 'PAID',
+          'total': p['totals'] is Map ? (p['totals'] as Map)['total'] : null,
+          'paidAt': p['paidAt'],
+          'offline': true,
+          'clientSettlementKey': key,
+        };
+        settlements[key] = SettlementRecord(
+          clientSettlementKey: key,
+          orderId: '${p['orderId'] ?? ''}',
+          bill: bill,
+        )
+          ..status = (it['status'] as String?) ?? 'pending'
+          ..errorCode = it['error_code'] as String?;
+        if (!todayBills.any((b) => b['clientSettlementKey'] == key)) {
+          todayBills.insert(0, bill);
+        }
+      }
+      notifyListeners();
+    } catch (_) {/* hydration is best-effort — never block startup */}
+  }
+
   /// Local settlements not yet accepted by the server (pending or FAILED) — the
   /// rows the Today's list must show alongside the server feed.
   List<SettlementRecord> get pendingSettlements =>
@@ -826,7 +868,7 @@ class AppSession extends ChangeNotifier {
         } on PosNetworkException {
           break; // offline — keep the queue, try again later
         } on PosApiException catch (e) {
-          _settlementRejected(key, e.code);
+          await _settlementRejected(key, e.code);
         }
       }
     } catch (_) {
@@ -845,12 +887,15 @@ class AppSession extends ChangeNotifier {
     }
   }
 
-  void _settlementRejected(String key, String code) {
+  Future<void> _settlementRejected(String key, String code) async {
     final rec = settlements[key];
     if (rec != null) {
       rec.status = 'failed';
       rec.errorCode = code;
     }
+    // Persist the refusal on the queued row so FAILED + its code survive a
+    // restart (the record itself is memory-only).
+    await _push.markFailed('order_settle', key, code);
     settlementNotices.add(
       'Settlement ${rec?.bill['receiptId'] ?? key} was REFUSED by the server ($code). '
       'Fix it and commit again from Today transactions — the sale is held locally.',
@@ -871,6 +916,11 @@ class AppSession extends ChangeNotifier {
         await _push.enqueue('order_settle', key, payload);
       } catch (_) {}
     }
+    // A re-commit is a fresh attempt — clear any stored FAILED so a restart
+    // does not re-flag a settlement the cashier has already re-committed.
+    try {
+      await _push.clearFailure('order_settle', key);
+    } catch (_) {}
     rec.status = 'pending';
     rec.errorCode = null;
     rec.bill['offline'] = true;
@@ -890,6 +940,15 @@ class AppSession extends ChangeNotifier {
       failed: failedSettlementCount,
       queued: await _push.pending().then((p) => p.length),
     );
+  }
+
+  /// Auto-push when the app returns to the foreground (resume). Deliberately
+  /// guarded so a resume costs nothing when there is nothing to do: no request
+  /// unless the session is READY (logged in), no flow is busy, and the outbox
+  /// actually holds something.
+  Future<void> pushQueuedOnResume() async {
+    if (stage != PosStage.ready || busy || _push.count == 0) return;
+    await pushNow();
   }
 
   /// Print warnings from a fire-and-forget print (bill at settle, captain/bev at
@@ -985,6 +1044,9 @@ class AppSession extends ChangeNotifier {
     // platform path is absent in tests and the caller must never fail startup.
     unawaited(UpdateService(PlatformApkBridge()).pruneStaleDownloads());
     _stageFromContext();
+    // Rebuild any un-accepted settlements from the durable outbox so a FAILED
+    // sale still reads FAILED (with its server code) after a restart.
+    await hydrateSettlements();
     notifyListeners();
   }
 

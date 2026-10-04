@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'package:gundam_pos/state/app_session.dart';
@@ -18,7 +20,7 @@ class PosApp extends StatefulWidget {
   State<PosApp> createState() => _PosAppState();
 }
 
-class _PosAppState extends State<PosApp> {
+class _PosAppState extends State<PosApp> with WidgetsBindingObserver {
   late final AppSession _session;
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
   bool _booted = false;
@@ -28,7 +30,19 @@ class _PosAppState extends State<PosApp> {
     super.initState();
     _session = (widget.sessionProvider ?? AppDependencies.create)();
     _session.addListener(_onSessionChanged);
+    WidgetsBinding.instance.addObserver(this);
     _boot();
+  }
+
+  /// Push the queue when the app returns to the foreground: a sale taken /
+  /// settled while the tablet was backgrounded (or offline) reaches the server
+  /// on resume without the operator tapping "Push now". Guarded inside
+  /// [AppSession.pushQueuedOnResume] — no request when logged out/busy/empty.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_session.pushQueuedOnResume());
+    }
   }
 
   /// Shared print-alert surface: a fire-and-forget print (bill at settle,
@@ -52,6 +66,7 @@ class _PosAppState extends State<PosApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _session.removeListener(_onSessionChanged);
     _session.dispose();
     super.dispose();

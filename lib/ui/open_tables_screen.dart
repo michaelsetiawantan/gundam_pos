@@ -186,6 +186,8 @@ class _OpenTablesScreenState extends State<OpenTablesScreen> with WidgetsBinding
       shortcode: widget.session.shortcode,
       // Late print warnings (captain/bev) reach the operator via the shell.
       onPrintAlerts: widget.session.notePrintAlerts,
+      // Continue this order's captain batch sequence (survives merge/split).
+      batchTracker: widget.session.batchTracker,
     );
     if (!c.resumeFrom(o)) return;
     await Navigator.of(context).push(MaterialPageRoute(

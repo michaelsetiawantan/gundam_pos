@@ -45,6 +45,14 @@ abstract class PushStore {
   /// Remove ONE queued item (per-entity ack). Used by the diagnostics outbox so
   /// a single accepted report leaves the queue without draining the rest.
   Future<void> remove(String entityType, String entityId);
+
+  /// Mark a queued item as FAILED with the server's refusal code. DURABLE: the
+  /// failure survives a restart so the cashier still sees FAILED + the reason
+  /// until the item is re-committed (which clears it) or accepted.
+  Future<void> markFailed(String entityType, String entityId, String code);
+
+  /// Clear a stored failure (a re-commit is a fresh attempt).
+  Future<void> clearFailure(String entityType, String entityId);
 }
 
 /// In-memory outbox (the pre-sqflite MVP behavior). Cleared on restart.
@@ -63,7 +71,14 @@ class MemoryPushStore implements PushStore {
     // `idx_pending_dedupe` UNIQUE index — re-enqueueing the same key (e.g. a
     // re-committed settlement) replaces the payload, it never duplicates.
     _queue.removeWhere((i) => i['type'] == entityType && i['id'] == entityId);
-    _queue.add({'type': entityType, 'id': entityId, 'payload_json': payload, 'created_at': createdAt});
+    _queue.add({
+      'type': entityType,
+      'id': entityId,
+      'payload_json': payload,
+      'created_at': createdAt,
+      'status': null,
+      'error_code': null,
+    });
   }
 
   @override
@@ -72,6 +87,26 @@ class MemoryPushStore implements PushStore {
   @override
   Future<void> remove(String entityType, String entityId) async {
     _queue.removeWhere((i) => i['type'] == entityType && i['id'] == entityId);
+  }
+
+  @override
+  Future<void> markFailed(String entityType, String entityId, String code) async {
+    for (final i in _queue) {
+      if (i['type'] == entityType && i['id'] == entityId) {
+        i['status'] = 'failed';
+        i['error_code'] = code;
+      }
+    }
+  }
+
+  @override
+  Future<void> clearFailure(String entityType, String entityId) async {
+    for (final i in _queue) {
+      if (i['type'] == entityType && i['id'] == entityId) {
+        i['status'] = null;
+        i['error_code'] = null;
+      }
+    }
   }
 }
 
@@ -158,11 +193,17 @@ class SqlitePosStore implements ReceiptSequenceStore, PushStore {
     try {
       final db = await _open();
       final rows = await db.rawQuery(
-          'SELECT entity_type AS type, entity_id AS id, payload_json, created_at '
+          'SELECT entity_type AS type, entity_id AS id, payload_json, created_at, status, error_code '
           'FROM pending_sync ORDER BY created_at ASC, id ASC');
       _memCount = rows.length;
       return rows.map((r) {
-        final out = <String, dynamic>{'type': r['type'], 'id': r['id'], 'created_at': r['created_at']};
+        final out = <String, dynamic>{
+          'type': r['type'],
+          'id': r['id'],
+          'created_at': r['created_at'],
+          'status': r['status'],
+          'error_code': r['error_code'],
+        };
         final raw = r['payload_json'];
         if (raw is String) {
           try {
@@ -194,13 +235,14 @@ class SqlitePosStore implements ReceiptSequenceStore, PushStore {
       int inserted;
       try {
         inserted = await db.rawInsert(
-            'INSERT INTO pending_sync (entity_type, entity_id, payload_json, created_at) '
-            'VALUES (?, ?, ?, ?)',
+            'INSERT INTO pending_sync (entity_type, entity_id, payload_json, created_at, status, error_code) '
+            'VALUES (?, ?, ?, ?, NULL, NULL)',
             [entityType, entityId, json, now]);
       } catch (_) {
         inserted = 0;
+        // A re-enqueue is a FRESH attempt: clear any stored failure.
         await db.rawUpdate(
-            'UPDATE pending_sync SET payload_json = ?, created_at = ? '
+            'UPDATE pending_sync SET payload_json = ?, created_at = ?, status = NULL, error_code = NULL '
             'WHERE entity_type = ? AND entity_id = ?',
             [json, now, entityType, entityId]);
       }
@@ -238,6 +280,34 @@ class SqlitePosStore implements ReceiptSequenceStore, PushStore {
       final fallback = _fallbackPush ??= MemoryPushStore();
       await fallback.remove(entityType, entityId);
       _memCount = fallback.count;
+    }
+  }
+
+  @override
+  Future<void> markFailed(String entityType, String entityId, String code) async {
+    try {
+      final db = await _open();
+      await db.rawUpdate(
+          "UPDATE pending_sync SET status = 'failed', error_code = ? "
+          'WHERE entity_type = ? AND entity_id = ?',
+          [code, entityType, entityId]);
+    } catch (_) {
+      final fallback = _fallbackPush ??= MemoryPushStore();
+      await fallback.markFailed(entityType, entityId, code);
+    }
+  }
+
+  @override
+  Future<void> clearFailure(String entityType, String entityId) async {
+    try {
+      final db = await _open();
+      await db.rawUpdate(
+          'UPDATE pending_sync SET status = NULL, error_code = NULL '
+          'WHERE entity_type = ? AND entity_id = ?',
+          [entityType, entityId]);
+    } catch (_) {
+      final fallback = _fallbackPush ??= MemoryPushStore();
+      await fallback.clearFailure(entityType, entityId);
     }
   }
 }
