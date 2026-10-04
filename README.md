@@ -7,6 +7,8 @@ di SQLite lokal, mencetak ke printer thermal, dan **tetap bisa dipakai walau ser
 - Server pasangannya: **gundam-web** (`/api/pos/*`) — dua repo terpisah, satu monorepo kerja
 - UI aplikasi **wajib berbahasa Inggris** (konvensi terkunci repo ini), walau dokumennya Indonesia
 
+🇬🇧 English version: [README.en.md](README.en.md)
+
 ---
 
 ## Fitur utama
